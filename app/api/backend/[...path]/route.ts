@@ -13,6 +13,12 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const responseHeaders = new Headers(upstream.headers);
   responseHeaders.delete("content-encoding");
   responseHeaders.delete("content-length");
+  // `Headers.get()` folds multiple Set-Cookie values into one string. Preserve
+  // each session cookie separately so browsers can store the API session.
+  responseHeaders.delete("set-cookie");
+  for (const cookie of upstream.headers.getSetCookie()) {
+    responseHeaders.append("set-cookie", cookie);
+  }
   return new NextResponse(upstream.body, { status: upstream.status, headers: responseHeaders });
 }
 
