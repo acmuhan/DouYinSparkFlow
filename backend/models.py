@@ -112,6 +112,7 @@ class Account(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (Index("tasks_schedule_due", "enabled", "archived", "next_run_at"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
@@ -133,6 +134,8 @@ class Run(Base):
     __table_args__ = (
         Index("runs_status_created", "status", "created_at"),
         Index("runs_user_created", "user_id", "created_at"),
+        Index("runs_task_status", "task_id", "status"),
+        Index("runs_status_lease", "status", "lease_until"),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)

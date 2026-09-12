@@ -5,10 +5,11 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import Order, Plan, Run, Subscription, Task, Account, Usage
+from ..models import Order, Plan, Subscription, Task, Account, Usage, User
 from .epay import build_checkout, validate_money
 from .errors import PaymentError, QuotaError
 
@@ -73,7 +74,14 @@ def create_order(db: Session, *, user_id: str, data, app_url: str) -> Order:
         expires_at=now + timedelta(minutes=30),
     )
     db.add(order)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        duplicate = db.scalar(select(Order).where(Order.user_id == user_id, Order.idempotency_key == data.idempotency_key))
+        if duplicate:
+            return duplicate
+        raise
     db.refresh(order)
     return order
 
@@ -98,6 +106,14 @@ def activate_order(db: Session, *, order_id: str, provider_trade_no: str, provid
     order.paid_at = datetime.utcnow()
     subscription = db.scalar(select(Subscription).where(Subscription.user_id == order.user_id).with_for_update())
     now = datetime.utcnow()
+    order.subscription_before = (
+        {
+            "plan_id": subscription.plan_id,
+            "snapshot": subscription.snapshot,
+            "expires_at": subscription.expires_at.isoformat() if subscription.expires_at else None,
+        }
+        if subscription else None
+    )
     current_expiry = subscription.expires_at if subscription and subscription.expires_at and subscription.expires_at > now else now
     new_expiry = add_months(current_expiry, order.months)
     if subscription:
@@ -113,20 +129,107 @@ def activate_order(db: Session, *, order_id: str, provider_trade_no: str, provid
     return order
 
 
-def ensure_can_create(db: Session, *, user_id: str, resource: str) -> None:
-    subscription = db.scalar(select(Subscription).where(Subscription.user_id == user_id))
-    if not subscription or not subscription.expires_at or subscription.expires_at <= datetime.utcnow():
+FAILED_PAYMENT_STATUSES = {"FAILED", "TRADE_CLOSED", "CLOSED", "PAY_ERROR"}
+
+
+def settle_order_callback(db: Session, *, order_id: str, provider_trade_no: str, provider_money: str, status: str) -> Order:
+    normalized = status.upper()
+    if normalized in FAILED_PAYMENT_STATUSES:
+        order = db.scalar(select(Order).where(Order.id == order_id).with_for_update())
+        if not order:
+            raise PaymentError("order not found")
+        if order.status == "PENDING":
+            order.status = "FAILED"
+            order.provider_trade_no = provider_trade_no or None
+            db.flush()
+        return order
+    return activate_order(
+        db,
+        order_id=order_id,
+        provider_trade_no=provider_trade_no,
+        provider_money=provider_money,
+        status=normalized,
+    )
+
+
+def expire_pending_orders(db: Session, *, now: datetime | None = None, batch_size: int = 200) -> int:
+    now = now or datetime.utcnow()
+    orders = list(db.scalars(select(Order).where(Order.status == "PENDING", Order.expires_at <= now).limit(batch_size).with_for_update(skip_locked=True)))
+    for order in orders:
+        order.status = "EXPIRED"
+    return len(orders)
+
+
+def ensure_can_create(db: Session, *, user_id: str, resource: str, now: datetime | None = None) -> None:
+    now = now or datetime.utcnow()
+    # All resource admissions for a tenant serialize on an existing row, even
+    # before their first usage/subscription row exists.
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True))
+    if not user or user.status != "ACTIVE":
+        raise QuotaError("account is not active")
+    subscription = db.scalar(select(Subscription).where(Subscription.user_id == user_id).with_for_update().execution_options(populate_existing=True))
+    if not subscription or not subscription.expires_at or subscription.expires_at <= now:
         raise QuotaError("an active subscription is required")
     limits = subscription.snapshot
     if resource == "account":
-        count = db.scalar(select(func.count(Account.id)).where(Account.user_id == user_id, Account.status != "DELETED")) or 0
+        count = len(list(db.scalars(select(Account.id).where(Account.user_id == user_id, Account.status != "DELETED").with_for_update())))
         limit = int(limits.get("account_limit", 0))
     elif resource == "task":
-        count = db.scalar(select(func.count(Task.id)).where(Task.user_id == user_id, Task.archived.is_(False))) or 0
+        count = len(list(db.scalars(select(Task.id).where(Task.user_id == user_id, Task.archived.is_(False)).with_for_update())))
         limit = int(limits.get("task_limit", 0))
+    elif resource == "run":
+        period = now.strftime("%Y-%m")
+        usage = db.scalar(select(Usage).where(Usage.user_id == user_id, Usage.period == period).with_for_update().execution_options(populate_existing=True))
+        count = usage.used if usage else 0
+        limit = max(0, int(limits.get("run_limit", 0)) + (usage.adjustment if usage else 0))
     else:
-        period = datetime.utcnow().strftime("%Y-%m")
-        count = db.scalar(select(func.coalesce(Usage.used, 0) + func.coalesce(Usage.adjustment, 0)).where(Usage.user_id == user_id, Usage.period == period)) or 0
-        limit = int(limits.get("run_limit", 0))
+        raise ValueError("unknown quota resource")
     if count >= limit:
         raise QuotaError(f"{resource} quota exceeded")
+
+
+def plan_snapshot(plan: Plan) -> dict:
+    return {
+        "slug": plan.slug,
+        "name": plan.name,
+        "features": plan.features,
+        "account_limit": plan.account_limit,
+        "task_limit": plan.task_limit,
+        "run_limit": plan.run_limit,
+    }
+
+
+def adjust_quota(db: Session, *, user_id: str, period: str, amount: int, reason: str) -> Usage:
+    usage = db.scalar(
+        select(Usage).where(Usage.user_id == user_id, Usage.period == period)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if not usage:
+        usage = Usage(id=str(uuid4()), user_id=user_id, period=period, used=0, adjustment=0)
+        db.add(usage)
+        db.flush()
+    usage.adjustment += amount
+    return usage
+
+
+def override_subscription(db: Session, *, user_id: str, plan_id: str, months: int) -> Subscription:
+    now = datetime.utcnow()
+    plan = db.scalar(select(Plan).where(Plan.id == plan_id, Plan.active.is_(True)).with_for_update())
+    if not plan:
+        raise ValueError("plan not found or inactive")
+    subscription = db.scalar(select(Subscription).where(Subscription.user_id == user_id).with_for_update())
+    current = subscription.expires_at if subscription and subscription.expires_at and subscription.expires_at > now else now
+    expiry = add_months(current, months)
+    snapshot = plan_snapshot(plan)
+    if subscription:
+        subscription.plan_id = plan.id
+        subscription.snapshot = snapshot
+        subscription.expires_at = expiry
+        subscription.updated_at = now
+    else:
+        subscription = Subscription(
+            id=str(uuid4()), user_id=user_id, plan_id=plan.id,
+            snapshot=snapshot, expires_at=expiry, updated_at=now,
+        )
+        db.add(subscription)
+    return subscription

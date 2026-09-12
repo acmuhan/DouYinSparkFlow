@@ -18,14 +18,14 @@ allHitokotoTypes = {
 }
 
 
-def request_hitokoto():
+def request_hitokoto(types: list[str] | None = None):
     """请求一言 API 获取一句话"""
-    config = get_config()
+    selected_types = types if types is not None else get_config()["hitokotoTypes"]
     
     api_url = hitokotoApi
 
     for t in allHitokotoTypes.keys():
-        if t in config["hitokotoTypes"]:
+        if t in selected_types:
             if "?" not in api_url:
                 api_url += "?"
             if "c=" in api_url:

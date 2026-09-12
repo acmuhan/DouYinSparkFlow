@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     session_days: int = 14
     registration_enabled: bool = True
     worker_enabled: bool = True
-    worker_timeout: int = 300
+    worker_timeout: int = Field(default=300, ge=10, le=3600)
     auto_create_tables: bool = False
     admin_email: str = ""
     admin_password: str = ""

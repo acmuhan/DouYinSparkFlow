@@ -102,7 +102,7 @@ export const tasks = mysqlTable("tasks", {
   nextRunAt: at("next_run_at"),
   createdAt: created(),
   updatedAt: at("updated_at").notNull(),
-});
+}, (t) => [index("tasks_schedule_due").on(t.enabled, t.archived, t.nextRunAt)]);
 export const runs = mysqlTable("runs", {
   id: id(),
   userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),
@@ -118,7 +118,12 @@ export const runs = mysqlTable("runs", {
   startedAt: at("started_at"),
   finishedAt: at("finished_at"),
   createdAt: created(),
-}, (t) => [index("runs_status_created").on(t.status, t.createdAt), index("runs_user_created").on(t.userId, t.createdAt)]);
+}, (t) => [
+  index("runs_status_created").on(t.status, t.createdAt),
+  index("runs_user_created").on(t.userId, t.createdAt),
+  index("runs_task_status").on(t.taskId, t.status),
+  index("runs_status_lease").on(t.status, t.leaseUntil),
+]);
 export const usage = mysqlTable("usage", {
   id: id(),
   userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),

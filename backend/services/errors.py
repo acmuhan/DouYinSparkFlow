@@ -4,3 +4,11 @@ class PaymentError(Exception):
 
 class QuotaError(Exception):
     pass
+
+
+class TaskError(Exception):
+    pass
+
+
+class RunCancelled(Exception):
+    pass

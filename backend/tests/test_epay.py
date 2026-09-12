@@ -12,3 +12,7 @@ def test_validate_money_rejects_mismatch():
     except PaymentError:
         return
     raise AssertionError("expected PaymentError")
+
+
+def test_validate_money_accepts_decimal_cents():
+    validate_money(4900, "49.00")

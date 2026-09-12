@@ -13,6 +13,18 @@ export const taskInputSchema = z.object({
   enabled: z.boolean().default(false),
 });
 
+export type User = { id: string; email: string; name: string; role: "USER" | "ADMIN"; status: string; last_login_at?: string | null };
+export type Plan = {
+  id: string; slug: string; name: string; description: string;
+  monthly_cents: number; quarterly_cents: number; yearly_cents: number;
+  account_limit: number; task_limit: number; run_limit: number; features: string[];
+  active: boolean; sort_order: number;
+};
+export type Subscription = { id: string; plan_id: string; snapshot: Record<string, unknown>; expires_at: string | null; updated_at: string };
+export type Usage = { period: string; used: number; adjustment: number; limit: number; remaining: number };
+export type Account = { id: string; name: string; unique_id: string; status: string; created_at: string; updated_at: string };
+export type ApiKey = { id: string; name: string; prefix: string; expires_at: string; revoked_at: string | null; created_at: string; token?: string | null };
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
