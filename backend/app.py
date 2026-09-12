@@ -201,7 +201,17 @@ def logout(response: Response, session_token: Annotated[str | None, Cookie(alias
 def _set_session(db: Session, user: User, response: Response) -> None:
     raw, token_hash = create_session_token()
     db.add(AuthSession(id=token_hash, user_id=user.id, expires_at=session_expiry()))
-    response.set_cookie("sf_session", raw, httponly=True, secure=settings.production, samesite="lax", max_age=settings.session_days * 86400, path="/")
+    # Secure cookies are required for HTTPS production, but must remain usable
+    # when an isolated production-mode smoke test is served over plain HTTP.
+    response.set_cookie(
+        "sf_session",
+        raw,
+        httponly=True,
+        secure=settings.app_url.lower().startswith("https://"),
+        samesite="lax",
+        max_age=settings.session_days * 86400,
+        path="/",
+    )
 
 
 @app.get("/api/v1/me", response_model=UserOut)
