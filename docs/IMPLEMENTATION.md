@@ -16,15 +16,22 @@ claim of production readiness.
 
 ## Acceptance Checklist
 
-- [ ] USER/ADMIN sessions, registration, profile, password and API keys
-- [ ] Tenant-scoped encrypted accounts, task CRUD, scheduling, quota enforcement
-- [ ] Isolated browser Runner, queued execution, cancellation and run history
-- [ ] Plans, monthly/quarterly/yearly orders and subscription activation/renewal
-- [ ] Epay V1/V2 signing, checkout, callbacks, reconciliation and refunds
-- [ ] Admin metrics, users, entitlements, quota changes, plans and audit logs
-- [ ] MySQL migrations, concurrency/isolation tests and TypeScript checks
-- [ ] Desktop/mobile rendered UI and end-to-end browser tests
-- [ ] Docker deployment, configuration and operational documentation
+Code-level functionality implemented in this repository:
+
+- [x] USER/ADMIN sessions, registration, profile, password and API keys
+- [x] Tenant-scoped encrypted accounts, task CRUD, scheduling and quota enforcement
+- [x] Isolated browser Runner, queued execution, cancellation and run history
+- [x] Plans, monthly/quarterly/yearly orders and subscription activation/renewal
+- [x] Epay V1/V2 signing, checkout, callbacks, reconciliation and refunds
+- [x] Admin metrics, users, entitlements, quota changes, plans and audit logs
+- [x] MySQL migrations, schema checks and TypeScript/Python automated checks
+- [x] Responsive desktop/mobile console smoke checks
+
+External or environment-dependent verification still required:
+
+- [ ] MySQL concurrency/isolation integration tests against a live MySQL 8 instance
+- [ ] Docker deployment runtime verification
+- [ ] End-to-end payment and Douyin messaging tests with operator credentials
 
 Live payment verification requires the operator's Epay endpoint/merchant keys.
 Live messaging verification requires an authorized Douyin account and recipient.

@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-## Architecture
+## Project Structure
 
 SparkFlow is a commercial multi-tenant console layered over the legacy Douyin
 Playwright runner. `app/` and `components/` are the Next.js App Router UI;
@@ -11,9 +11,9 @@ worker; `drizzle/` stores generated MySQL migrations.
 Keep user-owned resources scoped by `user_id`. Browser execution belongs in the
 Python worker, never inside a Next.js request or Server Action.
 
-## Local Development
+## Development Commands
 
-Install frontend dependencies and run checks:
+Key frontend commands:
 
 ```bash
 npm install
@@ -36,18 +36,24 @@ Copy `.env.platform.example` to `.env.local`, set `DATABASE_URL`, and run
 available with `docker compose up -d --build`; the legacy script is behind the
 `legacy` Compose profile.
 
-## Code and Tests
+## Coding Style
 
-Use strict TypeScript, four-space Python indentation, snake_case Python names,
-and PascalCase React components. Validate requests with Zod/Pydantic; keep
-payment callbacks idempotent and never log cookies or secrets. Backend tests
-use `pytest` under `backend/tests/`. Before a pull request run:
-`npm run typecheck && npm run lint && npm run build` and
+Use strict TypeScript, four-space Python indentation, `snake_case` Python names,
+and PascalCase React components. Validate boundaries with Zod or Pydantic.
+Keep payment callbacks idempotent, avoid logging cookies or secrets, and prefer
+existing helpers and UI primitives before adding abstractions.
+
+## Testing
+
+Backend tests use `pytest` under `backend/tests/` and should be named
+`test_*.py`. Add focused coverage for authentication, tenant isolation, billing
+transitions, and worker behavior. Before submitting changes, run:
+`npm run typecheck`, `npm run lint`, `npm run build`, and
 `python -m pytest backend/tests -q`.
 
 ## Commits and Pull Requests
 
 Use focused prefixes such as `feat:`, `fix:`, `docs:`, `ci:`, and `refactor:`.
 Pull requests should describe affected roles and API routes, list validation
-commands, include UI screenshots for visual changes, and call out migration,
-environment-variable, payment, or credential-handling changes.
+commands, include UI screenshots for visual changes, and call out migrations,
+environment variables, payment flows, or credential-handling changes.

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Activity, ArrowUpRight, BarChart3, Bell, Check, ChevronRight,
   CircleHelp, CreditCard, KeyRound, LayoutDashboard, Loader2, LogOut, Menu,
-  Plus, ReceiptText, RefreshCw, Server, Settings2, Sparkles, X,
+  Plus, ReceiptText, Server, Settings2, Sparkles, X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,13 +13,12 @@ import { Card } from "@/components/ui/card";
 import { useAuth } from "@/components/auth-gate";
 import { Account, ApiKey, Plan, Subscription, Usage, User, apiFetch, taskInputSchema } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { AdminConsole } from "@/components/admin-console";
 
 type View = "overview" | "tasks" | "accounts" | "billing" | "keys" | "admin";
 type Task = { id: string; name: string; account_id: string; targets: string[]; schedule_time: string; enabled: boolean; archived: boolean; next_run_at: string | null };
 type Run = { id: string; task_id: string; status: string; trigger_type: string; sent_count: number; result: string | null; cancel_requested: boolean; worker_id: string | null; created_at: string; finished_at: string | null };
-type AdminOverview = { users: number; active_users: number; paid_orders: number; gross_cents: number; queued_runs: number; failed_runs: number };
 type AdminOrder = { id: string; plan_id: string; cycle: string; amount_cents: number; status: string; provider_trade_no: string | null; created_at: string };
-type Worker = { id: string; heartbeat_at: string; status: string };
 
 const nav = [
   { id: "overview" as View, label: "概览", icon: LayoutDashboard },
@@ -33,11 +32,11 @@ function ErrorText({ message }: { message: string }) {
   return message ? <p role="alert" className="border border-[#f0c4be] bg-[#fff7f5] px-3 py-2 text-xs text-[#b43c2d]">{message}</p> : null;
 }
 
-function SideNav({ active, onSelect, onClose, user }: { active: View; onSelect: (view: View) => void; onClose?: () => void; user: User }) {
+function SideNav({ active, onSelect, onClose, onProfile, user }: { active: View; onSelect: (view: View) => void; onClose?: () => void; onProfile: () => void; user: User }) {
   return <aside className="flex h-full w-[244px] shrink-0 flex-col border-r border-[#e7e7e7] bg-[#fbfbfa]">
     <div className="flex h-[72px] items-center justify-between border-b border-[#e7e7e7] px-6"><div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-[6px] bg-[#161616] text-white"><Sparkles size={14} /></div><span className="font-semibold tracking-[-.03em]">sparkflow</span></div>{onClose && <Button variant="ghost" size="sm" aria-label="关闭菜单" onClick={onClose}><X size={16} /></Button>}</div>
     <div className="px-3 py-5"><div className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.18em] text-[#9a9a9a]">Workspace</div>{nav.map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => { onSelect(item.id); onClose?.(); }} className={cn("flex h-10 w-full items-center gap-3 rounded-[5px] px-3 text-sm transition", active === item.id ? "bg-[#161616] text-white" : "text-[#707070] hover:bg-[#f0f0ee] hover:text-[#161616]")}><Icon size={16} strokeWidth={1.8} /><span>{item.label}</span>{item.id === "billing" && <Badge tone="orange" className="ml-auto border-0 bg-[#f6e7d0] text-[10px]">PRO</Badge>}</button>; })}{user.role === "ADMIN" && <><div className="mb-2 mt-8 px-3 text-[10px] font-semibold uppercase tracking-[.18em] text-[#9a9a9a]">System</div><button onClick={() => { onSelect("admin"); onClose?.(); }} className={cn("flex h-10 w-full items-center gap-3 rounded-[5px] px-3 text-sm transition", active === "admin" ? "bg-[#161616] text-white" : "text-[#707070] hover:bg-[#f0f0ee] hover:text-[#161616]")}><BarChart3 size={16} strokeWidth={1.8} /><span>管理控制台</span></button></>}</div>
-    <div className="mt-auto border-t border-[#e7e7e7] p-4"><div className="flex items-center gap-3 rounded-[6px] p-2"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8e8e6] text-xs font-semibold">{user.name.slice(0, 2).toUpperCase()}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{user.name}</p><p className="truncate text-[11px] text-[#909090]">{user.email}</p></div><Settings2 size={15} className="text-[#909090]" /></div></div>
+    <div className="mt-auto border-t border-[#e7e7e7] p-4"><button onClick={onProfile} className="flex w-full items-center gap-3 rounded-[6px] p-2 text-left hover:bg-[#f0f0ee]"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e8e8e6] text-xs font-semibold">{user.name.slice(0, 2).toUpperCase()}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{user.name}</p><p className="truncate text-[11px] text-[#909090]">{user.email}</p></div><Settings2 size={15} className="text-[#909090]" /></button></div>
   </aside>;
 }
 
@@ -97,15 +96,43 @@ function Keys() {
 }
 
 function Admin() {
-  const [overview, setOverview] = useState<AdminOverview | null>(null); const [orders, setOrders] = useState<AdminOrder[]>([]); const [workers, setWorkers] = useState<Worker[]>([]); const [error, setError] = useState(""); const [refreshing, setRefreshing] = useState(false);
-  async function load() { setRefreshing(true); setError(""); try { const [nextOverview, nextOrders, nextWorkers] = await Promise.all([apiFetch<AdminOverview>("/admin/overview"), apiFetch<AdminOrder[]>("/admin/orders"), apiFetch<Worker[]>("/admin/workers")]); setOverview(nextOverview); setOrders(nextOrders); setWorkers(nextWorkers); } catch (reason) { setError(reason instanceof Error ? reason.message : "管理数据加载失败"); } finally { setRefreshing(false); } }
-  useEffect(() => { Promise.all([apiFetch<AdminOverview>("/admin/overview"), apiFetch<AdminOrder[]>("/admin/orders"), apiFetch<Worker[]>("/admin/workers")]).then(([nextOverview, nextOrders, nextWorkers]) => { setOverview(nextOverview); setOrders(nextOrders); setWorkers(nextWorkers); }).catch((reason) => setError(reason instanceof Error ? reason.message : "管理数据加载失败")); }, []);
-  return <div className="space-y-6"><div className="flex items-end justify-between"><div><h2 className="text-sm font-semibold">管理控制台</h2><p className="mt-1 text-xs text-[#909090]">指标、订单和 Worker 状态均来自受保护的 ADMIN API。</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={refreshing}>{refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}刷新</Button></div><ErrorText message={error} /><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><StatCard label="总用户" value={overview?.users.toLocaleString() ?? "—"} hint={`活跃 ${overview?.active_users.toLocaleString() ?? "—"}`} /><StatCard label="已支付订单" value={overview?.paid_orders.toLocaleString() ?? "—"} hint={`流水 ¥${overview ? (overview.gross_cents / 100).toFixed(2) : "—"}`} /><StatCard label="排队运行" value={overview?.queued_runs.toLocaleString() ?? "—"} hint={`失败 ${overview?.failed_runs.toLocaleString() ?? "—"}`} /><StatCard label="Worker" value={workers.filter((worker) => worker.status === "ONLINE").length.toString()} hint={`${workers.length} 个已登记节点`} /></div><div className="grid gap-6 xl:grid-cols-[1fr_.8fr]"><Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-[#e7e7e7] px-5 py-4"><div><h2 className="text-sm font-semibold">近期交易</h2><p className="mt-1 text-xs text-[#909090]">退款和补单操作通过后端审计接口执行</p></div><ReceiptText size={16} className="text-[#888]" /></div><div className="divide-y divide-[#eeeeec]">{orders.slice(0, 10).map((order) => <div className="flex flex-wrap items-center gap-3 px-5 py-4 text-xs" key={order.id}><span className="font-mono text-[11px] text-[#888]">{order.id.slice(0, 12)}</span><span className="min-w-0 flex-1">{order.cycle}</span><span className="font-mono">¥{(order.amount_cents / 100).toFixed(2)}</span><Badge tone={order.status === "PAID" ? "green" : order.status === "PENDING" ? "orange" : "neutral"}>{order.status}</Badge></div>)}{orders.length === 0 && <div className="px-5 py-8 text-center text-xs text-[#999]">暂无订单</div>}</div></Card><Card><div className="border-b border-[#e7e7e7] px-5 py-4"><h2 className="text-sm font-semibold">Worker 状态</h2></div><div className="space-y-4 p-5">{workers.map((worker) => <div className="flex items-center justify-between text-xs" key={worker.id}><span className="max-w-[140px] truncate font-mono text-[11px] text-[#777]">{worker.id}</span><span className="flex items-center gap-2 font-medium"><span className={cn("h-1.5 w-1.5 rounded-full", worker.status === "ONLINE" ? "bg-[#3eaa5d]" : "bg-[#b7b7b7]")} />{worker.status}</span></div>)}{workers.length === 0 && <p className="text-xs text-[#999]">暂无 Worker 心跳</p>}</div></Card></div></div>;
+  return <AdminConsole />;
+}
+
+function ProfileDialog({ user, onClose, onUpdated }: { user: User; onClose: () => void; onUpdated: () => Promise<void> }) {
+  const [name, setName] = useState(user.name);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(""); setMessage("");
+    try {
+      await apiFetch("/me", { method: "PATCH", body: JSON.stringify({ name }) });
+      await onUpdated();
+      setMessage("资料已更新，重新打开后会显示新名称。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "资料更新失败");
+    } finally { setBusy(false); }
+  }
+  async function savePassword(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(""); setMessage("");
+    try {
+      await apiFetch("/me/password", { method: "PATCH", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
+      setCurrentPassword(""); setNewPassword(""); setMessage("密码已更新，其他登录会话已失效。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "密码更新失败");
+    } finally { setBusy(false); }
+  }
+  return <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 px-5"><Card className="w-full max-w-[520px] p-6 shadow-xl"><div className="flex items-start justify-between"><div><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[#999]">Profile</p><h2 className="mt-2 text-lg font-semibold">个人中心</h2><p className="mt-1 text-xs text-[#777]">{user.email}</p></div><Button variant="ghost" size="sm" aria-label="关闭个人中心" onClick={onClose}><X size={16} /></Button></div><div className="mt-6 grid gap-6 sm:grid-cols-2"><form onSubmit={saveProfile} className="space-y-3"><h3 className="text-xs font-semibold">基本资料</h3><input required minLength={2} value={name} onChange={(event) => setName(event.target.value)} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] px-3 text-sm outline-none focus:border-[#161616]" /><Button type="submit" disabled={busy} size="sm">保存资料</Button></form><form onSubmit={savePassword} className="space-y-3"><h3 className="text-xs font-semibold">修改密码</h3><input required type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="当前密码" className="h-10 w-full rounded-[5px] border border-[#dcdcd9] px-3 text-xs outline-none focus:border-[#161616]" /><input required minLength={8} type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="新密码（至少 8 位）" className="h-10 w-full rounded-[5px] border border-[#dcdcd9] px-3 text-xs outline-none focus:border-[#161616]" /><Button type="submit" disabled={busy} variant="outline" size="sm">更新密码</Button></form></div>{(message || error) && <div className="mt-5"><p className={cn("text-xs", error ? "text-[#b43c2d]" : "text-[#287b42]")}>{error || message}</p></div>}</Card></div>;
 }
 
 export function ConsoleShell() {
-  const user = useAuth(); const router = useRouter(); const [active, setActive] = useState<View>("overview"); const [mobileOpen, setMobileOpen] = useState(false); const [newTask, setNewTask] = useState(false); const [taskRefresh, setTaskRefresh] = useState(0); const titles: Record<View, string> = { overview: "概览", tasks: "任务中心", accounts: "抖音资源", billing: "订阅与账单", keys: "API 密钥", admin: "管理控制台" };
+  const user = useAuth(); const router = useRouter(); const [active, setActive] = useState<View>("overview"); const [mobileOpen, setMobileOpen] = useState(false); const [newTask, setNewTask] = useState(false); const [taskRefresh, setTaskRefresh] = useState(0); const [profileOpen, setProfileOpen] = useState(false); const titles: Record<View, string> = { overview: "概览", tasks: "任务中心", accounts: "抖音资源", billing: "订阅与账单", keys: "API 密钥", admin: "管理控制台" };
   if (!user) return null;
   async function logout() { await apiFetch("/auth/logout", { method: "POST" }).catch(() => undefined); router.push("/login"); }
-  return <div className="flex min-h-screen"><div className="hidden md:block"><SideNav active={active} onSelect={setActive} user={user} /></div>{mobileOpen && <div className="fixed inset-0 z-40 flex md:hidden"><button className="absolute inset-0 bg-black/20" aria-label="关闭菜单" onClick={() => setMobileOpen(false)} /><div className="relative z-10 h-full"><SideNav active={active} onSelect={setActive} onClose={() => setMobileOpen(false)} user={user} /></div></div>}<main className="min-w-0 flex-1"><Topbar title={titles[active]} onMenu={() => setMobileOpen(true)} onLogout={() => void logout()} /><div className="grid-paper min-h-[calc(100vh-72px)] p-5 sm:p-8"><div className="mx-auto max-w-[1280px]">{active === "overview" && <Overview onSelect={setActive} user={user} />}{active === "tasks" && <div className="space-y-6"><div className="flex items-end justify-between"><div><h2 className="text-sm font-semibold">任务中心</h2><p className="mt-1 text-xs text-[#909090]">创建、调度并监控你的自动化任务。</p></div><Button onClick={() => setNewTask((value) => !value)}><Plus size={14} />{newTask ? "收起表单" : "新建任务"}</Button></div>{newTask && <Card><TaskForm onCreated={() => { setNewTask(false); setTaskRefresh((value) => value + 1); }} /></Card>}<Card><TaskTable refreshKey={taskRefresh} /></Card></div>}{active === "accounts" && <Accounts />}{active === "billing" && <Billing />}{active === "keys" && <Keys />}{active === "admin" && user.role === "ADMIN" && <Admin />}</div></div></main></div>;
+  return <div className="flex min-h-screen"><div className="hidden md:block"><SideNav active={active} onSelect={setActive} onProfile={() => setProfileOpen(true)} user={user} /></div>{mobileOpen && <div className="fixed inset-0 z-40 flex md:hidden"><button className="absolute inset-0 bg-black/20" aria-label="关闭菜单" onClick={() => setMobileOpen(false)} /><div className="relative z-10 h-full"><SideNav active={active} onSelect={setActive} onClose={() => setMobileOpen(false)} onProfile={() => { setProfileOpen(true); setMobileOpen(false); }} user={user} /></div></div>}<main className="min-w-0 flex-1"><Topbar title={titles[active]} onMenu={() => setMobileOpen(true)} onLogout={() => void logout()} /><div className="grid-paper min-h-[calc(100vh-72px)] p-5 sm:p-8"><div className="mx-auto max-w-[1280px]">{active === "overview" && <Overview onSelect={setActive} user={user} />}{active === "tasks" && <div className="space-y-6"><div className="flex items-end justify-between"><div><h2 className="text-sm font-semibold">任务中心</h2><p className="mt-1 text-xs text-[#909090]">创建、调度并监控你的自动化任务。</p></div><Button onClick={() => setNewTask((value) => !value)}><Plus size={14} />{newTask ? "收起表单" : "新建任务"}</Button></div>{newTask && <Card><TaskForm onCreated={() => { setNewTask(false); setTaskRefresh((value) => value + 1); }} /></Card>}<Card><TaskTable refreshKey={taskRefresh} /></Card></div>}{active === "accounts" && <Accounts />}{active === "billing" && <Billing />}{active === "keys" && <Keys />}{active === "admin" && user.role === "ADMIN" && <Admin />}{profileOpen && <ProfileDialog user={user} onClose={() => setProfileOpen(false)} onUpdated={user.refreshUser} />}</div></div></main></div>;
 }

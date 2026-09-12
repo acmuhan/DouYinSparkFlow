@@ -89,6 +89,14 @@ def create_order(db: Session, *, user_id: str, data, app_url: str) -> Order:
 def activate_order(db: Session, *, order_id: str, provider_trade_no: str, provider_money: str, status: str) -> Order:
     if status not in {"TRADE_SUCCESS", "SUCCESS", "PAID"}:
         raise PaymentError("payment is not successful")
+    order = db.scalar(select(Order).where(Order.id == order_id))
+    if not order:
+        raise PaymentError("order not found")
+    # Serialize all subscription mutations for one tenant. This closes the
+    # first-subscription race where two distinct paid orders both see no row.
+    user = db.scalar(select(User).where(User.id == order.user_id).with_for_update())
+    if not user:
+        raise PaymentError("order owner not found")
     order = db.scalar(select(Order).where(Order.id == order_id).with_for_update())
     if not order:
         raise PaymentError("order not found")
@@ -200,6 +208,9 @@ def plan_snapshot(plan: Plan) -> dict:
 
 
 def adjust_quota(db: Session, *, user_id: str, period: str, amount: int, reason: str) -> Usage:
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user:
+        raise ValueError("user not found")
     usage = db.scalar(
         select(Usage).where(Usage.user_id == user_id, Usage.period == period)
         .with_for_update().execution_options(populate_existing=True)
@@ -213,6 +224,9 @@ def adjust_quota(db: Session, *, user_id: str, period: str, amount: int, reason:
 
 
 def override_subscription(db: Session, *, user_id: str, plan_id: str, months: int) -> Subscription:
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user:
+        raise ValueError("user not found")
     now = datetime.utcnow()
     plan = db.scalar(select(Plan).where(Plan.id == plan_id, Plan.active.is_(True)).with_for_update())
     if not plan:

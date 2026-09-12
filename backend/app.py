@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+import logging
+import time
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 from uuid import uuid4
@@ -14,9 +16,9 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .crypto import encrypt_secret
 from .db import Base, engine, get_db
-from .models import Account, ApiKey, AuditLog, AuthSession, Order, Plan, Refund, Run, Subscription, Task, Usage, User, Worker
+from .models import Account, ApiKey, AuditLog, AuthSession, Order, Plan, RateLimit, Refund, Run, Subscription, Task, Usage, User, Worker
 from .schemas import (
-    AccountIn, AccountOut, AdminUserOut, ApiKeyIn, ApiKeyOut, CheckoutIn, LoginIn, OrderOut,
+    AccountIn, AccountOut, AdminRunStatusIn, AdminUserOut, ApiKeyIn, ApiKeyOut, CheckoutIn, LoginIn, OrderOut,
     AdminSubscriptionIn, PasswordUpdateIn, PlanOut, PlanUpdateIn, ProfileUpdateIn, QuotaAdjustmentIn,
     ReconcileIn, RefundCompleteIn, RefundIn, RefundOut, RegisterIn, RunOut, SubscriptionOut, TaskIn,
     TaskOut, UsageOut, UserOut, UserStatusIn,
@@ -30,14 +32,33 @@ from .services.jobs import cancel_run, enqueue_run, owned_task
 from .services.scheduling import next_daily_run, utc_now
 
 settings = get_settings()
+logger = logging.getLogger("sparkflow.api")
 app = FastAPI(title="SparkFlow API", version="0.1.0", docs_url="/api/docs" if not settings.production else None)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Request-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("request_failed request_id=%s method=%s path=%s", request_id, request.method, request.url.path)
+        raise
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_completed request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+        request_id, request.method, request.url.path, response.status_code,
+        (time.perf_counter() - started) * 1000,
+    )
+    return response
 
 
 def api_error(status_code: int, detail: str):
@@ -86,6 +107,30 @@ def _user_out(user: User) -> UserOut:
     return UserOut.model_validate(user)
 
 
+LOGIN_ATTEMPT_LIMIT = 8
+LOGIN_WINDOW_SECONDS = 15 * 60
+
+
+def _login_rate_key(email: str, client_host: str) -> str:
+    return hash_api_key(f"login:{email.lower()}:{client_host}")
+
+
+def _consume_login_attempt(db: Session, key: str) -> RateLimit:
+    now = datetime.utcnow()
+    limit = db.scalar(select(RateLimit).where(RateLimit.id == key).with_for_update())
+    if limit and limit.expires_at <= now:
+        limit.attempts = 0
+        limit.expires_at = now + timedelta(seconds=LOGIN_WINDOW_SECONDS)
+    if not limit:
+        limit = RateLimit(id=key, attempts=0, expires_at=now + timedelta(seconds=LOGIN_WINDOW_SECONDS))
+        db.add(limit)
+        db.flush()
+    if limit.attempts >= LOGIN_ATTEMPT_LIMIT:
+        api_error(429, "登录尝试过于频繁，请稍后再试")
+    limit.attempts += 1
+    return limit
+
+
 @app.on_event("startup")
 def startup():
     if settings.auto_create_tables:
@@ -130,10 +175,14 @@ def register(payload: RegisterIn, response: Response, db: Session = Depends(get_
 
 
 @app.post("/api/v1/auth/login", response_model=UserOut)
-def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
+def login(payload: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)):
+    client_host = request.client.host if request.client else "unknown"
+    rate_limit = _consume_login_attempt(db, _login_rate_key(payload.email, client_host))
     user = db.scalar(select(User).where(User.email == payload.email.lower()))
     if not user or user.status != "ACTIVE" or not verify_password(payload.password, user.password_hash):
+        db.commit()
         api_error(401, "邮箱或密码错误")
+    db.delete(rate_limit)
     user.last_login_at = datetime.utcnow()
     _set_session(db, user, response)
     record_audit(db, actor_id=user.id, action="auth.login", target_id=user.id)
@@ -395,10 +444,14 @@ def revoke_api_key(key_id: str, user: User = Depends(current_user), db: Session 
 
 @app.get("/api/v1/admin/overview")
 def admin_overview(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    total_orders = db.scalar(select(func.count(Order.id))) or 0
+    paid_orders = db.scalar(select(func.count(Order.id)).where(Order.status == "PAID")) or 0
     return {
         "users": db.scalar(select(func.count(User.id))) or 0,
         "active_users": db.scalar(select(func.count(User.id)).where(User.status == "ACTIVE")) or 0,
-        "paid_orders": db.scalar(select(func.count(Order.id)).where(Order.status == "PAID")) or 0,
+        "orders": total_orders,
+        "paid_orders": paid_orders,
+        "order_conversion_rate": round((paid_orders / total_orders) * 100, 2) if total_orders else 0,
         "gross_cents": db.scalar(select(func.coalesce(func.sum(Order.amount_cents), 0)).where(Order.status == "PAID")) or 0,
         "queued_runs": db.scalar(select(func.count(Run.id)).where(Run.status.in_(["QUEUED", "CLAIMED", "RUNNING"]))) or 0,
         "failed_runs": db.scalar(select(func.count(Run.id)).where(Run.status == "FAILED")) or 0,
@@ -511,6 +564,11 @@ def admin_request_refund(order_id: str, payload: RefundIn, actor: User = Depends
     return refund
 
 
+@app.get("/api/v1/admin/refunds", response_model=list[RefundOut])
+def admin_refunds(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(Refund).order_by(Refund.created_at.desc()).limit(200)))
+
+
 @app.patch("/api/v1/admin/refunds/{refund_id}", response_model=RefundOut)
 def admin_complete_refund(refund_id: str, payload: RefundCompleteIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
     refund = db.scalar(select(Refund).where(Refund.id == refund_id).with_for_update())
@@ -552,6 +610,33 @@ def admin_audit_logs(_: User = Depends(current_admin), db: Session = Depends(get
 @app.get("/api/v1/admin/runs", response_model=list[RunOut])
 def admin_runs(_: User = Depends(current_admin), db: Session = Depends(get_db)):
     return list(db.scalars(select(Run).order_by(Run.created_at.desc()).limit(200)))
+
+
+@app.patch("/api/v1/admin/runs/{run_id}", response_model=RunOut)
+def admin_run_status(run_id: str, payload: AdminRunStatusIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
+    if not run:
+        api_error(404, "运行记录不存在")
+    if payload.status == "QUEUED":
+        if run.status not in {"FAILED", "CANCELLED"}:
+            api_error(409, "只有失败或已取消运行可以重新入队")
+        run.status = "QUEUED"
+        run.cancel_requested = False
+        run.finished_at = None
+        run.result = None
+        run.worker_id = None
+        run.lease_until = None
+    else:
+        if run.status not in {"QUEUED", "CLAIMED", "RUNNING"}:
+            api_error(409, "当前运行状态不可取消")
+        run.cancel_requested = True
+        if run.status == "QUEUED":
+            run.status = "CANCELLED"
+            run.finished_at = datetime.utcnow()
+            run.result = "Admin cancelled before execution"
+    record_audit(db, actor_id=actor.id, action="admin.run_status", target_id=run.id, detail={"status": payload.status, "reason": payload.reason})
+    db.commit()
+    return run
 
 
 @app.get("/api/v1/admin/workers")

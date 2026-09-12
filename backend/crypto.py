@@ -9,7 +9,10 @@ from .config import get_settings
 
 
 def _fernet() -> Fernet:
-    configured = get_settings().encryption_key
+    settings = get_settings()
+    configured = settings.encryption_key
+    if settings.production and configured in {"", "change-me", "replace-with-a-long-random-secret"}:
+        raise RuntimeError("ENCRYPTION_KEY is required in production")
     material = configured.encode("utf-8") if configured else b"sparkflow-local-development-key"
     key = base64.urlsafe_b64encode(hashlib.sha256(material).digest())
     return Fernet(key)

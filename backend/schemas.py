@@ -50,6 +50,11 @@ class UserStatusIn(BaseModel):
     status: Literal["ACTIVE", "SUSPENDED", "BANNED"]
 
 
+class AdminRunStatusIn(BaseModel):
+    status: Literal["QUEUED", "CANCELLED"]
+    reason: str = Field(min_length=1, max_length=255)
+
+
 class PlanOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str

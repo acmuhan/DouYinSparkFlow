@@ -35,6 +35,10 @@ Do not commit `.env` files, browser cookies, API keys, or generated logs.
 Review Douyin's terms and obtain the required authorization before operating
 accounts for other people or offering paid automation.
 
+For production, set a unique high-entropy `ENCRYPTION_KEY`; empty values and
+the example placeholders are rejected by the API. Configure Epay credentials
+and `ADMIN_PASSWORD` through the deployment environment, never in Git.
+
 ## License
 
 The project is licensed under the MIT License; see [`LICENSE`](LICENSE).
