@@ -12,14 +12,8 @@
 仓库根目录的 [AGENTS.md](../AGENTS.md) 是贡献规范；
 API 请求字段以 `backend/schemas.py` 和启动后的 `/docs` 为准。
 
-## 历史单机脚本
+## 维护范围
 
-下面的文档服务于 `main.py` 工作流，不是新平台的部署手册：
-
-- [源代码部署说明](源代码部署说明.md)
-- [Action 部署说明](Action部署说明.md)
-- [Docker 部署说明](Docker部署说明.md)
-- [配置生成器使用](配置生成器使用.md)
-
-`index.html`、`static/`、`images/` 保留历史文档及配置页面资源。
-新平台使用 `.env.platform.example`，不要把旧脚本的配置直接当成平台配置。
+仅维护多租户平台教程。旧单机 CLI、定时 Actions、配置生成器及对应教程
+已移除，历史版本可从 Git 查阅。新平台统一使用
+`.env.platform.example` 与 `backend/requirements.txt`。

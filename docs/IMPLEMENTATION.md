@@ -1,7 +1,7 @@
 # SparkFlow Product Implementation
 
-The product is being rebuilt in this repository. The legacy CLI remains available
-until its replacement Runner is verified. Do not interpret this checklist as a
+The platform is the maintained entry point; the standalone legacy CLI has been
+removed while shared Runner modules remain. Do not interpret this checklist as a
 claim of production readiness.
 
 ## Architecture

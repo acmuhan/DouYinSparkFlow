@@ -1,5 +1,13 @@
 # DouYin Spark Flow / SparkFlow
 
+![项目封面](docs/images/cover.png)
+
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6)
+![Python](https://img.shields.io/badge/Python-FastAPI-009688)
+![Next.js](https://img.shields.io/badge/Next.js-App_Router-black)
+![MySQL](https://img.shields.io/badge/MySQL-8%2B-4479A1)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 SparkFlow 是基于原 Douyin Playwright Runner 构建的多租户控制台：
 Next.js App Router + TypeScript + Tailwind/shadcn 风格组件，Python FastAPI
 负责认证、任务与计费，MySQL 8+ 通过 Drizzle Migration 管理结构。
@@ -9,7 +17,7 @@ Next.js App Router + TypeScript + Tailwind/shadcn 风格组件，Python FastAPI
 
 ## 文档导航
 
-- [文档索引](docs/README.md)：新平台与历史脚本文档的范围
+- [文档索引](docs/README.md)：平台教程与运维说明
 - [本地开发](docs/DEVELOPMENT.md)：环境、迁移、启动、检查
 - [部署与运维](docs/DEPLOYMENT.md)：生产配置、代理、备份、排错
 - [支付与业务边界](docs/BILLING.md)：订单、回调、退款与验收
@@ -66,6 +74,30 @@ DouYin Spark Flow is a Playwright-based automation project for maintaining
 Douyin chat streaks. The repository now includes a commercial multi-tenant
 console built with Next.js and a Python API.
 
+## 技术栈
+
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | TypeScript、Next.js App Router、React |
+| 界面 | Tailwind CSS、Radix UI、shadcn 风格组件、Lucide |
+| 服务端 | Python、FastAPI、Pydantic、SQLAlchemy |
+| 数据库 | MySQL 8+、Drizzle ORM 与版本化 Migration |
+| 自动化 | Playwright、独立 Python Worker |
+| 认证 | HttpOnly Session、ADMIN/USER 权限、哈希 API 密钥 |
+
+## 仓库结构
+
+```text
+app/ components/      Next.js 页面、代理和业务界面
+lib/                  前端契约、数据库与 Drizzle schema
+backend/              Python API、Worker、服务和测试
+core/ utils/          Worker 复用的执行模块与工具
+drizzle/              SQL 迁移与快照
+scripts/              数据库迁移入口
+tests/                执行模块回归测试
+docs/                 平台教程、运维说明和项目图片
+```
+
 ## Product Console
 
 The new platform is organized as a SaaS application:
@@ -83,15 +115,8 @@ logs, and Epay V1/V2-compatible checkout callbacks. See
 [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for the architecture and
 acceptance checklist.
 
-## Legacy Script
-
-The original local workflow remains available:
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-python main.py
-```
+平台是唯一受维护的启动方式。旧单机 CLI、定时 Actions、
+独立 Docker 入口和配置生成器已移除；仍被 Worker 引用的执行模块保留。
 
 Do not commit `.env` files, browser cookies, API keys, or generated logs.
 Review Douyin's terms and obtain the required authorization before operating

@@ -33,8 +33,8 @@ python -m backend.worker
 
 Copy `.env.platform.example` to `.env.local`, set `DATABASE_URL`, and run
 `npm run db:generate` followed by `npm run db:migrate`. The full stack is also
-available with `docker compose up -d --build`; the legacy script is behind the
-`legacy` Compose profile.
+available with `docker compose up -d --build`. Only platform entry points are
+maintained; shared browser modules remain under `core/`.
 
 ## Coding Style
 
