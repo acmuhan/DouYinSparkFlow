@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #161616;
+  --muted: #707070;
+  --line: #e7e7e7;
+  --soft: #f7f7f5;
+  --accent: #ff5c35;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; background: #fbfbfa; color: var(--ink); font-family: var(--font-geist), Arial, sans-serif; }
+button, input, textarea, select { font: inherit; }
+button { cursor: pointer; }
+::selection { background: #161616; color: #fff; }
+.font-mono { font-family: var(--font-mono), monospace; }
+.grid-paper {
+  background-image: linear-gradient(to right, rgba(22,22,22,.035) 1px, transparent 1px), linear-gradient(to bottom, rgba(22,22,22,.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}

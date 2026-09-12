@@ -6,3 +6,16 @@ logs/
 .DS_Store
 usersData.json
 .env
+node_modules/
+.next/
+.env.local
+.env.*.local
+!.env.example
+coverage/
+test-results/
+.runtime/
+*.tsbuildinfo
+.pytest_cache/
+backend/.venv/
+.npm-cache/
+.pnpm-store/

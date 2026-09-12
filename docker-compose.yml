@@ -1,5 +1,75 @@
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: sparkflow-mysql
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: sparkflow
+      MYSQL_USER: sparkflow
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sparkflow}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sparkflow-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://sparkflow:${MYSQL_PASSWORD:-sparkflow}@mysql:3306/sparkflow
+      AUTO_CREATE_TABLES: "true"
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: sparkflow-web
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sparkflow-worker
+    restart: unless-stopped
+    command: ["python", "-m", "backend.worker"]
+    environment:
+      DATABASE_URL: mysql://sparkflow:${MYSQL_PASSWORD:-sparkflow}@mysql:3306/sparkflow
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      api:
+        condition: service_started
+
   douyin-spark-flow:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -12,3 +82,6 @@ services:
     volumes:
       - ${CONFIG_ENV_FILE:-./config/.env}:/app/.env:ro
       - ${LOGS_DIR:-./logs}:/app/logs
+
+volumes:
+  mysql-data:
