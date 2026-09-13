@@ -64,6 +64,25 @@ HTTPS 网关至少需要以下路由：
 
 ## 发布验收
 
+### 已有表但缺失迁移记录
+
+如果首次执行迁移报 `Table 'accounts' already exists`，不要删表或将建表
+SQL 改成 `IF NOT EXISTS`。旧部署可能通过 `AUTO_CREATE_TABLES=true`
+调用 SQLAlchemy 建表，而 Drizzle 没有对应历史；也可能存在部分执行的迁移。
+现有表不代表字段、索引和外键都符合迁移版本。
+
+先备份数据库，暂停 API/Worker，并将 `AUTO_CREATE_TABLES=false`。
+同步当前脚本后执行只读诊断：
+
+```bash
+npm run db:migrate -- --status
+```
+
+输出包含迁移历史、本地迁移哈希和应用表的建表定义，不读取业务行或 Cookie。
+需核对全部表、字段、默认值、索引和外键，确认基线版本后才可补迁移记录；
+存在结构差异时先制定并验证保留数据的修复 SQL。不要仅凭某张表存在
+就把全部迁移标记为已执行。诊断模式不会写入基线或执行迁移。
+
 先备份数据库，应用迁移，再启动 API、Worker 和 Web。
 确认 API 健康响应中的 `database=ok`、管理员可登录、Worker 有心跳。
 用授权测试账号验证任务与租户隔离；用支付平台测试环境验证通知和重放。
