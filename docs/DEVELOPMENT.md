@@ -18,6 +18,8 @@
 `.env.local` 同时供 Next.js、迁移脚本和 Python Settings 读取。
 从仓库根目录启动命令，使用相同加密密钥启动 API 和 Worker。
 不要提交环境文件、Cookie、密钥或日志。
+默认 Web/API 端口分别为 `3000` 和 `8000`，端口被占用时可在 `.env.local`
+设置 `WEB_PORT` 或 `API_PORT`。
 
 首次启动可以直接使用统一进程管理器。它会先执行数据库迁移，再启动 API、
 Worker 和 Web，三个进程共享 `.env.local`：

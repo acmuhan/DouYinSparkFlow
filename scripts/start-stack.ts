@@ -15,6 +15,8 @@ const forceProduction = process.argv.includes("--production");
 const development = !forceProduction && (process.argv.includes("--dev") || process.env.NODE_ENV !== "production");
 const apiHost = process.env.API_HOST ?? "0.0.0.0";
 const apiPort = process.env.API_PORT ?? "8000";
+const webHost = process.env.WEB_HOST ?? "0.0.0.0";
+const webPort = process.env.WEB_PORT ?? "3000";
 
 function runMigration() {
   const result = spawnSync(npmCommand, ["run", "db:migrate"], {
@@ -62,7 +64,10 @@ function main() {
       ...(development ? ["--reload"] : []),
     ]),
     start("worker", pythonCommand, ["-m", "backend.worker"]),
-    start("web", npmCommand, ["run", development ? "dev" : "start"]),
+    start("web", npmCommand, [
+      "run", development ? "dev" : "start", "--",
+      "--hostname", webHost, "--port", webPort,
+    ]),
   ];
   const shutdown = () => stopAll(children);
   process.once("SIGINT", shutdown);

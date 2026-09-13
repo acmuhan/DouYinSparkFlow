@@ -105,6 +105,8 @@ npm run db:migrate
 MySQL 锁执行同一套版本自检，避免只重启某个进程时漏掉字段升级。
 所有服务从 `.env.local` 读取同一个 `DATABASE_URL`，不要让 Web、API、
 Worker 指向不同数据库。
+如果 1Panel 已经单独运行 Web，不要重复执行 `start:stack`；停止旧 Web
+进程，或设置未占用的 `WEB_PORT` 后再启动整套服务。
 确认 API 健康响应中的 `database=ok`、管理员可登录、Worker 有心跳。
 用授权测试账号验证任务与租户隔离；用支付平台测试环境验证通知和重放。
 没有商户及抖音测试授权时，不应宣称端到端验收完成。
