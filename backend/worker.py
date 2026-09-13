@@ -36,6 +36,8 @@ def supervise_run(run_id: str, worker_id: str, timeout: int) -> None:
                 reason = "Execution stopped after cancellation or lease loss; delivery may be partial"
                 break
     finally:
+        if process.exitcode not in (None, 0) and reason.startswith("Worker process stopped"):
+            reason = f"Worker process exited with code {process.exitcode}; delivery may be partial"
         if process.pid is not None:
             if process.is_alive():
                 process.terminate()

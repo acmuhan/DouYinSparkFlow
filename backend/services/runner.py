@@ -4,6 +4,7 @@ import json
 import logging
 
 from playwright.sync_api import sync_playwright
+from playwright._impl._errors import TargetClosedError
 from sqlalchemy import select, update
 
 from core.msg_builder import build_message
@@ -74,6 +75,9 @@ def execute_run(run_id: str, worker_id: str, *, session_factory=SessionLocal, ex
         message = f"{result.sent_count} browser submissions; {result.missing_count} targets not found"
     except RunCancelled:
         outcome, message = "CANCELLED", "Execution stopped; delivery may be partial"
+    except TargetClosedError:
+        logger.error("run.failed run_id=%s error_type=TargetClosedError", run_id)
+        outcome, message = "FAILED", "浏览器页面已关闭，任务未完成；请检查 Cookie 有效性后重试。"
     except Exception as exc:
         # Browser errors may embed cookies, draft text or target identifiers.
         logger.error("run.failed run_id=%s error_type=%s", run_id, type(exc).__name__)
