@@ -5,6 +5,7 @@ import { migrate } from "drizzle-orm/mysql2/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { readFileSync } from "node:fs";
 import { readMigrationState, readTableDefinitions } from "./migration-status";
+import { adoptExistingDatabase } from "./database-adoption";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -42,12 +43,7 @@ async function main() {
       return;
     }
     if (state.needsBaselineReview) {
-      throw new Error(
-        "Existing application tables have no Drizzle migration history. " +
-        "Back up the database, stop API/worker auto-creation, and run " +
-        "'npm run db:migrate -- --status' for schema review. " +
-        "Do not drop tables or mark migrations applied without verifying their full schema.",
-      );
+      await adoptExistingDatabase(connection);
     }
     await migrate(drizzle(connection), { migrationsFolder: "./drizzle" });
     console.log("Database migrations applied.");

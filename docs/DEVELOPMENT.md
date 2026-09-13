@@ -19,15 +19,23 @@
 从仓库根目录启动命令，使用相同加密密钥启动 API 和 Worker。
 不要提交环境文件、Cookie、密钥或日志。
 
-首次启动先执行 `npm run db:migrate`，然后分别运行：
+首次启动可以直接使用统一进程管理器。它会先执行数据库迁移，再启动 API、
+Worker 和 Web，三个进程共享 `.env.local`：
 
 ```powershell
-uvicorn backend.app:app --reload --port 8000
-python -m backend.worker
+npm run dev:stack
+```
+
+生产构建后使用 `npm run start:stack`。也可以分别运行：
+
+```powershell
+npm run db:migrate
+npm run start:api
+npm run start:worker
 npm run dev
 ```
 
-这三个命令各占一个终端。访问 `http://localhost:3000`；
+访问 `http://localhost:3000`；
 API 文档在 `http://127.0.0.1:8000/docs`。
 `/api/v1/health` 需检查 JSON 的 `database` 字段，而不是只看 HTTP 200。
 
@@ -39,7 +47,9 @@ API 文档在 `http://127.0.0.1:8000/docs`。
 4. 在隔离 MySQL 实例验证升级、约束和事务行为后提交迁移文件。
 
 现有迁移的正常部署只需 `db:migrate`，不需重新生成。
-`AUTO_CREATE_TABLES=true` 仅用于开发，不替代版本化迁移。
+API 和 Worker 启动前会执行带 MySQL 锁的幂等版本自检。
+生产应保持 `AUTO_MIGRATE=true`、`AUTO_CREATE_TABLES=false`。
+自检发现缺表、缺字段或订单周期异常时会拒绝启动。
 
 ## 回归检查
 

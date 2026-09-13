@@ -41,15 +41,14 @@ Copy-Item .env.platform.example .env.local
 ```
 
 编辑 `.env.local`，设置数据库连接、独立随机 `ENCRYPTION_KEY`、
-管理员账号密码，并将 `AUTO_CREATE_TABLES=false`。然后：
+管理员账号密码，并将 `AUTO_CREATE_TABLES=false`。然后一键启动：
 
 ```powershell
-npm run db:migrate
-uvicorn backend.app:app --reload --port 8000
+npm run dev:stack
 ```
 
-在另外两个终端分别运行 `npm run dev` 和 `python -m backend.worker`
-（Worker 终端也需要激活虚拟环境）。访问 `http://localhost:3000`。
+生产构建后使用 `npm run start:stack`。所有进程从 `.env.local`
+读取 `DATABASE_URL`、`BACKEND_URL` 和加密密钥。访问 `http://localhost:3000`。
 API 启动时会初始化套餐，并在配置的管理员邮箱尚不存在时创建管理员；
 修改环境变量不会重置已有管理员密码或提升已有账号角色。
 

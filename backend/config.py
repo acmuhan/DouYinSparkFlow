@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     worker_enabled: bool = True
     worker_timeout: int = Field(default=300, ge=10, le=3600)
     auto_create_tables: bool = False
+    auto_migrate: bool = True
     admin_email: str = ""
     admin_password: str = ""
     admin_name: str = "SparkFlow Admin"

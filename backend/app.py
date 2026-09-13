@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .crypto import encrypt_secret
 from .db import Base, engine, get_db
+from .migrations import ensure_schema
 from .models import Account, ApiKey, Announcement, AuditLog, AuthSession, Order, Plan, RateLimit, Refund, Run, Subscription, SystemSetting, Task, Usage, User, Worker
 from .schemas import (
     AccountIn, AccountOut, AdminRunStatusIn, AdminUserOut, ApiKeyIn, ApiKeyOut, CheckoutIn, LoginIn, OrderOut,
@@ -156,8 +157,12 @@ def _consume_login_attempt(db: Session, key: str) -> RateLimit:
 
 @app.on_event("startup")
 def startup():
-    if settings.auto_create_tables:
+    if settings.auto_migrate:
+        ensure_schema()
+    elif settings.auto_create_tables:
         Base.metadata.create_all(engine)
+    else:
+        raise RuntimeError("AUTO_MIGRATE=false requires an externally completed database migration")
     with next(get_db()) as db:
         seed_plans(db)
         if settings.admin_email and settings.admin_password:

@@ -5,7 +5,9 @@ import multiprocessing
 import time
 from uuid import uuid4
 
-from .db import SessionLocal
+from .config import get_settings
+from .db import SessionLocal, engine
+from .migrations import ensure_schema
 from .models import Account, Worker
 from .services.jobs import claim_next_run, finish_interrupted, heartbeat, recover_expired_runs, renew_lease, scheduler_tick
 from .services.billing import expire_pending_orders
@@ -84,6 +86,11 @@ def supervise_run(run_id: str, worker_id: str, timeout: int) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Tests may replace SessionLocal with an isolated SQLite sessionmaker.
+    # Production and normal local runs use the module-level engine.
+    bound_engine = getattr(SessionLocal, "kw", {}).get("bind")
+    if get_settings().auto_migrate and (bound_engine is None or bound_engine is engine):
+        ensure_schema()
     worker_id = f"worker-{uuid4().hex[:12]}"
     try:
         while True:
