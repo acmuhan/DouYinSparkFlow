@@ -8,10 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from .payment_settings import load_payment, callback_snapshot
 from ..models import Order, Plan, Subscription, Task, Account, Usage, User
 from .epay import build_checkout, validate_money
 from .errors import PaymentError, QuotaError
+from ..permissions import LEGACY_PERMISSIONS
 
 CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
 CYCLE_PRICE = {"monthly": "monthly_cents", "quarterly": "quarterly_cents", "yearly": "yearly_cents"}
@@ -33,6 +34,9 @@ def seed_plans(db: Session) -> None:
         Plan(id=str(uuid4()), slug="pro", name="Pro", description="适合稳定运营的进阶方案", monthly_cents=4900, quarterly_cents=12900, yearly_cents=39900, account_limit=5, task_limit=30, run_limit=3000, features=["多账号", "API Keys", "优先队列", "运行日志"], sort_order=2),
         Plan(id=str(uuid4()), slug="studio", name="Studio", description="团队与高频任务工作区", monthly_cents=12900, quarterly_cents=33900, yearly_cents=99900, account_limit=20, task_limit=200, run_limit=20000, features=["多账号", "团队审计", "API Keys", "优先队列", "高级报表"], sort_order=3),
     ]
+    for plan in plans:
+        plan.plugin_permissions = ["douyin_streak"]
+        plan.permissions = list(LEGACY_PERMISSIONS)
     db.add_all(plans)
     db.commit()
 
@@ -46,6 +50,9 @@ def create_order(db: Session, *, user_id: str, data, app_url: str) -> Order:
         raise ValueError("plan not found or inactive")
     months = CYCLE_MONTHS[data.cycle]
     amount_cents = int(getattr(plan, CYCLE_PRICE[data.cycle]))
+    payment = load_payment(db)
+    if not payment.enabled:
+        raise ValueError("支付尚未启用，请联系管理员")
     now = datetime.utcnow()
     order_id = str(uuid4())
     checkout = build_checkout(
@@ -56,18 +63,20 @@ def create_order(db: Session, *, user_id: str, data, app_url: str) -> Order:
         notify_url=f"{app_url.rstrip('/')}/api/v1/billing/epay/callback",
         return_url=f"{app_url.rstrip('/')}/billing/result?order={order_id}",
         custom_param=user_id,
+        settings=payment,
     )
     order = Order(
         id=order_id,
         user_id=user_id,
         plan_id=plan.id,
-        snapshot={"slug": plan.slug, "name": plan.name, "features": plan.features, "account_limit": plan.account_limit, "task_limit": plan.task_limit, "run_limit": plan.run_limit},
+        snapshot=plan_snapshot(plan),
         cycle=data.cycle,
         months=months,
         amount_cents=amount_cents,
         status="PENDING",
-        provider_version=get_settings().epay_version.upper(),
-        merchant_id=get_settings().epay_pid or "local",
+        provider_version=payment.epay_version,
+        merchant_id=payment.epay_pid,
+        payment_config_encrypted=callback_snapshot(payment),
         payment_method=data.payment_method,
         idempotency_key=data.idempotency_key,
         checkout=checkout,
@@ -201,6 +210,8 @@ def plan_snapshot(plan: Plan) -> dict:
         "slug": plan.slug,
         "name": plan.name,
         "features": plan.features,
+        "plugin_permissions": plan.plugin_permissions,
+        "permissions": plan.permissions,
         "account_limit": plan.account_limit,
         "task_limit": plan.task_limit,
         "run_limit": plan.run_limit,

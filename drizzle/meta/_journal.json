@@ -15,6 +15,62 @@
       "when": 1789219120406,
       "tag": "0001_tearful_randall_flagg",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789271031809,
+      "tag": "0002_lethal_tinkerer",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1789271520225,
+      "tag": "0003_colossal_magma",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1789272472748,
+      "tag": "0004_rich_firedrake",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1789272776364,
+      "tag": "0005_flowery_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1789273472663,
+      "tag": "0006_absent_dakota_north",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1789273761608,
+      "tag": "0007_naive_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1789274268161,
+      "tag": "0008_nostalgic_puppet_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1789274595695,
+      "tag": "0009_damp_sebastian_shaw",
+      "breakpoints": true
     }
   ]
 }

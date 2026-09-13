@@ -16,12 +16,12 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .crypto import encrypt_secret
 from .db import Base, engine, get_db
-from .models import Account, ApiKey, AuditLog, AuthSession, Order, Plan, RateLimit, Refund, Run, Subscription, Task, Usage, User, Worker
+from .models import Account, ApiKey, Announcement, AuditLog, AuthSession, Order, Plan, RateLimit, Refund, Run, Subscription, SystemSetting, Task, Usage, User, Worker
 from .schemas import (
     AccountIn, AccountOut, AdminRunStatusIn, AdminUserOut, ApiKeyIn, ApiKeyOut, CheckoutIn, LoginIn, OrderOut,
     AdminSubscriptionIn, PasswordUpdateIn, PlanOut, PlanUpdateIn, ProfileUpdateIn, QuotaAdjustmentIn,
     ReconcileIn, RefundCompleteIn, RefundIn, RefundOut, RegisterIn, RunOut, SubscriptionOut, TaskIn,
-    TaskOut, UsageOut, UserOut, UserStatusIn,
+    TaskOut, UsageOut, UserOut, UserStatusIn, PlanCreateIn, SettingIn, AnnouncementIn, GeneralSettingsIn,
 )
 from .security import create_session_token, hash_api_key, hash_password, session_expiry, verify_password
 from .services.audit import record_audit
@@ -30,6 +30,20 @@ from .services.epay import verify_callback
 from .services.errors import PaymentError, QuotaError, TaskError
 from .services.jobs import cancel_run, enqueue_run, owned_task
 from .services.scheduling import next_daily_run, utc_now
+from .services.platform_settings import registration_enabled, set_registration_enabled
+from .services.platform_settings import WorkerSettings, worker_settings, set_worker_settings
+from .models import AnnouncementRead
+from .schemas import AnnouncementOut, AnnouncementNotificationOut
+from .schemas import AdminUserCreateIn, AdminUserEditIn
+from .services.user_management import retire_user, revoke_user_credentials
+from .services.mail import MailError, MailIn, SmtpOut, SmtpUpdate, load_smtp, save_smtp, send_mail, smtp_public
+from .plugins import PLUGINS, allowed_plugins
+from .services.plugin_access import ensure_plugin_access, ensure_permission
+from .permissions import PERMISSIONS, LEGACY_PERMISSIONS, effective_permissions
+from .models import RunEvent
+from .schemas import RunEventOut
+from .services.run_events import add_run_event
+from .services.payment_settings import PaymentOut, PaymentUpdate, load_payment, order_payment_config, payment_public, save_payment
 
 settings = get_settings()
 logger = logging.getLogger("sparkflow.api")
@@ -38,7 +52,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
@@ -91,6 +105,8 @@ def current_user(
         user = db.get(User, key.user_id)
         if not user or user.status != "ACTIVE":
             api_error(status.HTTP_403_FORBIDDEN, "账户不可用")
+        if user.role != "ADMIN":
+            require_permission(db, user.id, "api.access")
         key.last_used_at = datetime.utcnow()
         db.commit()
         return user
@@ -101,6 +117,13 @@ def current_admin(user: User = Depends(current_user)) -> User:
     if user.role != "ADMIN":
         api_error(status.HTTP_403_FORBIDDEN, "需要管理员权限")
     return user
+
+
+def require_permission(db: Session, user_id: str, permission: str) -> None:
+    try:
+        ensure_permission(db, user_id, permission)
+    except QuotaError as exc:
+        api_error(403, str(exc))
 
 
 def _user_out(user: User) -> UserOut:
@@ -156,7 +179,7 @@ def health(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/auth/register", response_model=UserOut, status_code=201)
 def register(payload: RegisterIn, response: Response, db: Session = Depends(get_db)):
-    if not settings.registration_enabled:
+    if not registration_enabled(db):
         api_error(403, "暂未开放注册")
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
@@ -273,7 +296,10 @@ async def epay_callback(request: Request, db: Session = Depends(get_db)):
     content_type = request.headers.get("content-type", "")
     raw: dict[str, Any] = dict(await request.form()) if "application/x-www-form-urlencoded" in content_type else dict(await request.json())
     try:
-        verify_callback({key: str(value) for key, value in raw.items()})
+        callback_order = db.get(Order, str(raw.get("out_trade_no", "")))
+        if not callback_order:
+            raise PaymentError("order not found")
+        verify_callback({key: str(value) for key, value in raw.items()}, settings=order_payment_config(callback_order))
         order = settle_order_callback(
             db,
             order_id=str(raw.get("out_trade_no", "")),
@@ -295,11 +321,15 @@ def my_orders(user: User = Depends(current_user), db: Session = Depends(get_db))
 
 @app.post("/api/v1/accounts", response_model=AccountOut, status_code=201)
 def create_account(payload: AccountIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_permission(db, user.id, "accounts.create")
+    require_permission(db, user.id, "accounts.validate")
     try:
         ensure_can_create(db, user_id=user.id, resource="account")
     except QuotaError as exc:
         api_error(402, str(exc))
     account = Account(id=str(uuid4()), user_id=user.id, name=payload.name.strip(), unique_id=payload.unique_id.strip(), cookies_encrypted=encrypt_secret(__import__("json").dumps(payload.cookies)), status="READY", updated_at=datetime.utcnow())
+    account.status = "UNVERIFIED"
+    account.inspection_status = "QUEUED"
     db.add(account)
     try:
         db.commit()
@@ -314,6 +344,54 @@ def create_account(payload: AccountIn, user: User = Depends(current_user), db: S
 @app.get("/api/v1/accounts", response_model=list[AccountOut])
 def list_accounts(user: User = Depends(current_user), db: Session = Depends(get_db)):
     return list(db.scalars(select(Account).where(Account.user_id == user.id, Account.status != "DELETED").order_by(Account.created_at.desc())))
+
+
+@app.patch("/api/v1/accounts/{account_id}", response_model=AccountOut)
+def update_account(account_id: str, payload: AccountIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    db.scalar(select(User).where(User.id == user.id).with_for_update())
+    account = db.scalar(select(Account).where(Account.id == account_id, Account.user_id == user.id, Account.status != "DELETED").with_for_update())
+    if not account:
+        api_error(404, "账号不存在")
+    require_permission(db, user.id, "accounts.validate")
+    account.name = payload.name.strip()
+    account.unique_id = payload.unique_id.strip()
+    account.cookies_encrypted = encrypt_secret(__import__("json").dumps(payload.cookies))
+    account.status = "UNVERIFIED"
+    account.inspection_status = "QUEUED"
+    account.inspection_message = "Cookie 已更新，等待重新验证"
+    account.checked_at = None
+    account.friends = []
+    account.updated_at = utc_now()
+    record_audit(db, actor_id=user.id, action="account.credentials_updated", target_id=account.id)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        api_error(409, "该账号已存在")
+    return account
+
+
+@app.post("/api/v1/accounts/{account_id}/validate", response_model=AccountOut, status_code=202)
+def validate_account(account_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = db.scalar(select(Account).where(Account.id == account_id, Account.user_id == user.id, Account.status != "DELETED").with_for_update())
+    if not account:
+        api_error(404, "账号不存在")
+    require_permission(db, user.id, "accounts.validate")
+    if account.inspection_status not in {"QUEUED", "CHECKING"}:
+        account.inspection_status = "QUEUED"
+        account.inspection_message = "等待 Worker 验证 Cookie 并同步好友"
+        account.updated_at = utc_now()
+    db.commit()
+    return account
+
+
+@app.get("/api/v1/accounts/{account_id}/friends")
+def account_friends(account_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = db.scalar(select(Account).where(Account.id == account_id, Account.user_id == user.id, Account.status != "DELETED"))
+    if not account:
+        api_error(404, "账号不存在")
+    return {"items": account.friends or [], "inspection_status": account.inspection_status,
+            "checked_at": account.checked_at, "complete": False}
 
 
 @app.delete("/api/v1/accounts/{account_id}", status_code=204)
@@ -334,14 +412,20 @@ def delete_account(account_id: str, user: User = Depends(current_user), db: Sess
 
 @app.post("/api/v1/tasks", response_model=TaskOut, status_code=201)
 def create_task(payload: TaskIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_permission(db, user.id, "tasks.create")
+    if payload.enabled:
+        require_permission(db, user.id, "tasks.schedule")
     try:
         ensure_can_create(db, user_id=user.id, resource="task")
+        ensure_plugin_access(db, user.id, payload.plugin_id)
     except QuotaError as exc:
         api_error(402, str(exc))
-    if not db.scalar(select(Account.id).where(Account.id == payload.account_id, Account.user_id == user.id, Account.status == "READY")):
+    if payload.account_id and not db.scalar(select(Account.id).where(Account.id == payload.account_id, Account.user_id == user.id, Account.status == "READY")):
         api_error(404, "账号不存在")
     task = Task(id=str(uuid4()), user_id=user.id, account_id=payload.account_id, name=payload.name.strip(), targets=payload.targets, message=payload.message, hitokoto_types=payload.hitokoto_types, schedule_time=payload.schedule_time, timezone=payload.timezone, enabled=payload.enabled, archived=False, updated_at=datetime.utcnow())
     task.next_run_at = next_daily_run(task.schedule_time, task.timezone, utc_now()) if task.enabled else None
+    task.plugin_id = payload.plugin_id
+    task.plugin_config = payload.plugin_config
     db.add(task)
     record_audit(db, actor_id=user.id, action="task.created", target_id=task.id, detail={"name": task.name})
     db.commit()
@@ -355,11 +439,18 @@ def list_tasks(user: User = Depends(current_user), db: Session = Depends(get_db)
 
 @app.patch("/api/v1/tasks/{task_id}", response_model=TaskOut)
 def update_task(task_id: str, payload: TaskIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_permission(db, user.id, "tasks.create")
+    if payload.enabled:
+        require_permission(db, user.id, "tasks.schedule")
+    try:
+        ensure_plugin_access(db, user.id, payload.plugin_id)
+    except QuotaError as exc:
+        api_error(403, str(exc))
     try:
         task = owned_task(db, user.id, task_id)
     except TaskError:
         api_error(404, "任务不存在")
-    if not db.scalar(select(Account.id).where(Account.id == payload.account_id, Account.user_id == user.id, Account.status == "READY")):
+    if payload.account_id and not db.scalar(select(Account.id).where(Account.id == payload.account_id, Account.user_id == user.id, Account.status == "READY")):
         api_error(404, "账号不存在")
     schedule_changed = (task.enabled, task.schedule_time, task.timezone) != (payload.enabled, payload.schedule_time, payload.timezone)
     for key, value in payload.model_dump().items():
@@ -372,6 +463,14 @@ def update_task(task_id: str, payload: TaskIn, user: User = Depends(current_user
     record_audit(db, actor_id=user.id, action="task.updated", target_id=task.id)
     db.commit()
     return task
+
+
+@app.get("/api/v1/plugins")
+def plugin_catalog(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    subscription = db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    permissions = allowed_plugins(subscription.snapshot) if subscription and subscription.expires_at and subscription.expires_at > utc_now() else []
+    return [{"id": item.id, "name": item.name, "description": item.description, "authorized": item.id in permissions,
+             "requires_account": item.requires_account, "config_schema": item.config_model.model_json_schema()} for item in PLUGINS.values()]
 
 
 @app.delete("/api/v1/tasks/{task_id}", status_code=204)
@@ -427,6 +526,12 @@ def request_run_cancel(run_id: str, user: User = Depends(current_user), db: Sess
     return run
 
 
+@app.get("/api/v1/runs/{run_id}/events", response_model=list[RunEventOut])
+def run_events(run_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    get_run(run_id, user, db)
+    return list(db.scalars(select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at, RunEvent.id).limit(1000)))
+
+
 @app.get("/api/v1/api-keys", response_model=list[ApiKeyOut])
 def list_api_keys(user: User = Depends(current_user), db: Session = Depends(get_db)):
     return list(db.scalars(select(ApiKey).where(ApiKey.user_id == user.id).order_by(ApiKey.created_at.desc())))
@@ -434,6 +539,8 @@ def list_api_keys(user: User = Depends(current_user), db: Session = Depends(get_
 
 @app.post("/api/v1/api-keys", response_model=ApiKeyOut, status_code=201)
 def create_api_key(payload: ApiKeyIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != "ADMIN":
+        require_permission(db, user.id, "api.access")
     raw = "sf_live_" + secrets.token_urlsafe(30)
     now = datetime.utcnow()
     key = ApiKey(id=str(uuid4()), user_id=user.id, name=payload.name.strip(), prefix=raw[:14], token_hash=hash_api_key(raw), expires_at=now + timedelta(days=payload.expires_days), created_at=now)
@@ -470,7 +577,7 @@ def admin_overview(_: User = Depends(current_admin), db: Session = Depends(get_d
 
 @app.get("/api/v1/admin/users", response_model=list[AdminUserOut])
 def admin_users(_: User = Depends(current_admin), db: Session = Depends(get_db)):
-    users = list(db.scalars(select(User).order_by(User.created_at.desc()).limit(200)))
+    users = list(db.scalars(select(User).where(User.status != "DELETED").order_by(User.created_at.desc()).limit(200)))
     result = []
     for user in users:
         output = AdminUserOut.model_validate(user)
@@ -479,12 +586,68 @@ def admin_users(_: User = Depends(current_admin), db: Session = Depends(get_db))
     return result
 
 
-@app.patch("/api/v1/admin/users/{user_id}/status", response_model=UserOut)
-def admin_user_status(user_id: str, payload: UserStatusIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+@app.post("/api/v1/admin/users", response_model=UserOut, status_code=201)
+def admin_create_user(payload: AdminUserCreateIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    user = User(
+        id=str(uuid4()), email=payload.email, name=payload.name,
+        password_hash=hash_password(payload.password), role="USER", status="ACTIVE",
+    )
+    db.add(user)
+    record_audit(db, actor_id=actor.id, action="admin.user_created", target_id=user.id)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        api_error(409, "邮箱已注册")
+    return user
+
+
+@app.patch("/api/v1/admin/users/{user_id}", response_model=UserOut)
+def admin_edit_user(user_id: str, payload: AdminUserEditIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user or user.status == "DELETED":
+        api_error(404, "用户不存在")
+    if user.role == "ADMIN":
+        api_error(409, "此操作仅适用于普通用户")
+    rebound = user.email != payload.email
+    user.name = payload.name
+    user.email = payload.email
+    if rebound:
+        with db.no_autoflush:
+            revoke_user_credentials(db, user.id)
+    record_audit(db, actor_id=actor.id, action="admin.user_email_rebound" if rebound else "admin.user_updated", target_id=user.id)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        api_error(409, "邮箱已注册")
+    return user
+
+
+@app.delete("/api/v1/admin/users/{user_id}", status_code=204)
+def admin_delete_user(user_id: str, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if not user:
         api_error(404, "用户不存在")
+    if user.id == actor.id or user.role == "ADMIN":
+        api_error(409, "不能删除管理员账户")
+    if user.status == "DELETED":
+        return
+    retire_user(db, user)
+    record_audit(db, actor_id=actor.id, action="admin.user_deleted", target_id=user.id)
+    db.commit()
+
+
+@app.patch("/api/v1/admin/users/{user_id}/status", response_model=UserOut)
+def admin_user_status(user_id: str, payload: UserStatusIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user or user.status == "DELETED":
+        api_error(404, "用户不存在")
+    if user.role == "ADMIN" and payload.status != "ACTIVE":
+        api_error(409, "不能停用管理员账户")
     user.status = payload.status
+    if user.status != "ACTIVE":
+        revoke_user_credentials(db, user.id)
     record_audit(db, actor_id=actor.id, action="admin.user_status", target_id=user.id, detail={"status": user.status})
     db.commit()
     return user
@@ -521,16 +684,223 @@ def admin_plans(_: User = Depends(current_admin), db: Session = Depends(get_db))
     return list(db.scalars(select(Plan).order_by(Plan.sort_order)))
 
 
+@app.get("/api/v1/admin/permissions")
+def permission_catalog(_: User = Depends(current_admin)):
+    return [{"id": key, "name": name, "legacy": key in LEGACY_PERMISSIONS} for key, name in PERMISSIONS.items()]
+
+
+@app.get("/api/v1/me/permissions")
+def my_permissions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    subscription = db.scalar(select(Subscription).where(Subscription.user_id == user.id))
+    return {"permissions": effective_permissions(subscription.snapshot) if subscription and subscription.expires_at and subscription.expires_at > utc_now() else []}
+
+
 @app.patch("/api/v1/admin/plans/{plan_id}", response_model=PlanOut)
 def admin_update_plan(plan_id: str, payload: PlanUpdateIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
     plan = db.get(Plan, plan_id)
     if not plan:
         api_error(404, "套餐不存在")
-    for key, value in payload.model_dump().items():
+    for key, value in payload.model_dump(exclude_none=True).items():
         setattr(plan, key, value)
     record_audit(db, actor_id=actor.id, action="admin.plan_updated", target_id=plan.id, detail={"slug": plan.slug})
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        api_error(409, "套餐 slug 已存在")
+    return plan
+
+
+@app.post("/api/v1/admin/plans", response_model=PlanOut, status_code=201)
+def admin_create_plan(payload: PlanCreateIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    plan = Plan(id=payload.id or str(uuid4()), **payload.model_dump(exclude={"id"}))
+    db.add(plan)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        api_error(409, "套餐 ID 或 slug 已存在")
+    record_audit(db, actor_id=actor.id, action="admin.plan_created", target_id=plan.id)
     db.commit()
     return plan
+
+
+@app.delete("/api/v1/admin/plans/{plan_id}", status_code=204)
+def admin_delete_plan(plan_id: str, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    plan = db.get(Plan, plan_id)
+    if not plan:
+        api_error(404, "套餐不存在")
+    if (db.scalar(select(func.count(Subscription.id)).where(Subscription.plan_id == plan.id))
+            or db.scalar(select(func.count(Order.id)).where(Order.plan_id == plan.id))):
+        plan.active = False
+    else:
+        db.delete(plan)
+    record_audit(db, actor_id=actor.id, action="admin.plan_deleted", target_id=plan.id)
+    db.commit()
+
+
+@app.get("/api/v1/admin/settings")
+def admin_settings(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    rows = db.scalars(select(SystemSetting).order_by(SystemSetting.key))
+    return [{"key": row.key, "configured": True, "updated_at": row.updated_at} for row in rows]
+
+
+@app.get("/api/v1/admin/settings/general", response_model=GeneralSettingsIn)
+def admin_general_settings(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    config = worker_settings(db)
+    return GeneralSettingsIn(registration_enabled=registration_enabled(db), worker_enabled=config.enabled, worker_timeout=config.timeout)
+
+
+@app.put("/api/v1/admin/settings/general", response_model=GeneralSettingsIn)
+def admin_update_general_settings(payload: GeneralSettingsIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    set_registration_enabled(db, payload.registration_enabled)
+    old = worker_settings(db)
+    set_worker_settings(db, WorkerSettings(
+        enabled=payload.worker_enabled if payload.worker_enabled is not None else old.enabled,
+        timeout=payload.worker_timeout if payload.worker_timeout is not None else old.timeout,
+    ))
+    record_audit(db, actor_id=actor.id, action="admin.general_settings_updated", detail=payload.model_dump())
+    db.commit()
+    return admin_general_settings(actor, db)
+
+
+@app.get("/api/v1/admin/settings/smtp", response_model=SmtpOut)
+def admin_smtp_settings(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    return smtp_public(load_smtp(db))
+
+
+@app.put("/api/v1/admin/settings/smtp", response_model=SmtpOut)
+def admin_update_smtp(payload: SmtpUpdate, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    try:
+        output = save_smtp(db, payload)
+    except ValueError:
+        api_error(400, "配置不完整，或连接信息已变更，请重新输入密码")
+    record_audit(db, actor_id=actor.id, action="admin.smtp_updated")
+    db.commit()
+    return output
+
+
+def _send_admin_mail(db: Session, actor: User, recipient: User, payload: MailIn):
+    try:
+        message_id = send_mail(db, recipient.email, payload)
+    except MailError as exc:
+        record_audit(db, actor_id=actor.id, action="admin.mail_failed", target_id=recipient.id)
+        db.commit()
+        api_error(502, str(exc))
+    record_audit(db, actor_id=actor.id, action="admin.mail_accepted", target_id=recipient.id, detail={"message_id": message_id})
+    db.commit()
+    return {"status": "ACCEPTED", "message_id": message_id}
+
+
+@app.post("/api/v1/admin/settings/smtp/test")
+def admin_test_smtp(actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    return _send_admin_mail(db, actor, actor, MailIn(subject="SparkFlow SMTP test", body="SMTP configuration test."))
+
+
+@app.post("/api/v1/admin/users/{user_id}/email")
+def admin_email_user(user_id: str, payload: MailIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if not user or user.status == "DELETED":
+        api_error(404, "用户不存在")
+    return _send_admin_mail(db, actor, user, payload)
+
+
+@app.get("/api/v1/admin/settings/payment", response_model=PaymentOut)
+def admin_payment_settings(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    return payment_public(load_payment(db))
+
+
+@app.put("/api/v1/admin/settings/payment", response_model=PaymentOut)
+def admin_update_payment(payload: PaymentUpdate, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    try:
+        output = save_payment(db, payload)
+    except ValueError:
+        api_error(400, "支付配置不完整或密钥格式错误；更换商户或网关时需重新输入密钥")
+    record_audit(db, actor_id=actor.id, action="admin.payment_settings_updated")
+    db.commit()
+    return output
+
+
+@app.put("/api/v1/admin/settings/{key}")
+def admin_setting(key: str, payload: SettingIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    if not key or len(key) > 80:
+        api_error(400, "设置键无效")
+    if key in {"registration_enabled", "smtp", "worker", "payment"}:
+        api_error(400, "请通过常规设置接口更新注册开关")
+    row = db.get(SystemSetting, key)
+    if not row:
+        row = SystemSetting(key=key, value_encrypted=encrypt_secret(payload.value))
+        db.add(row)
+    else:
+        row.value_encrypted = encrypt_secret(payload.value)
+        row.updated_at = datetime.utcnow()
+    record_audit(db, actor_id=actor.id, action="admin.setting_updated", target_id=key)
+    db.commit()
+    return {"key": key, "configured": True}
+
+
+@app.get("/api/v1/announcements", response_model=list[AnnouncementOut])
+def announcements(db: Session = Depends(get_db)):
+    return list(db.scalars(select(Announcement).where(Announcement.active.is_(True)).order_by(Announcement.created_at.desc()).limit(50)))
+
+
+@app.post("/api/v1/admin/announcements", response_model=AnnouncementOut, status_code=201)
+def admin_create_announcement(payload: AnnouncementIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    item = Announcement(id=str(uuid4()), **payload.model_dump())
+    db.add(item)
+    record_audit(db, actor_id=actor.id, action="admin.announcement_created", target_id=item.id)
+    db.commit()
+    return item
+
+
+@app.get("/api/v1/admin/announcements", response_model=list[AnnouncementOut])
+def admin_announcements(_: User = Depends(current_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(Announcement).order_by(Announcement.created_at.desc()).limit(200)))
+
+
+@app.patch("/api/v1/admin/announcements/{announcement_id}", response_model=AnnouncementOut)
+def admin_update_announcement(announcement_id: str, payload: AnnouncementIn, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    item = db.get(Announcement, announcement_id)
+    if not item:
+        api_error(404, "公告不存在")
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value)
+    record_audit(db, actor_id=actor.id, action="admin.announcement_updated", target_id=item.id)
+    db.commit()
+    return item
+
+
+@app.delete("/api/v1/admin/announcements/{announcement_id}", status_code=204)
+def admin_delete_announcement(announcement_id: str, actor: User = Depends(current_admin), db: Session = Depends(get_db)):
+    item = db.scalar(select(Announcement).where(Announcement.id == announcement_id).with_for_update())
+    if not item:
+        api_error(404, "公告不存在")
+    db.query(AnnouncementRead).filter_by(announcement_id=item.id).delete()
+    db.delete(item)
+    record_audit(db, actor_id=actor.id, action="admin.announcement_deleted", target_id=item.id)
+    db.commit()
+
+
+@app.get("/api/v1/notifications/announcements", response_model=list[AnnouncementNotificationOut])
+def announcement_notifications(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(Announcement, AnnouncementRead.read_at).outerjoin(
+            AnnouncementRead,
+            (AnnouncementRead.announcement_id == Announcement.id) & (AnnouncementRead.user_id == user.id),
+        ).where(Announcement.active.is_(True)).order_by(Announcement.created_at.desc()).limit(200)
+    )
+    return [AnnouncementNotificationOut.model_validate(item).model_copy(update={"read_at": read_at}) for item, read_at in rows]
+
+
+@app.put("/api/v1/notifications/announcements/{announcement_id}/read", status_code=204)
+def read_announcement(announcement_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    # Serialize with deletion and concurrent marks without exposing another user's state.
+    item = db.scalar(select(Announcement).where(Announcement.id == announcement_id, Announcement.active.is_(True)).with_for_update())
+    if not item:
+        api_error(404, "公告不存在")
+    if not db.get(AnnouncementRead, (user.id, item.id)):
+        db.add(AnnouncementRead(user_id=user.id, announcement_id=item.id))
+    db.commit()
 
 
 @app.get("/api/v1/admin/orders", response_model=list[OrderOut])
@@ -645,6 +1015,7 @@ def admin_run_status(run_id: str, payload: AdminRunStatusIn, actor: User = Depen
             run.finished_at = datetime.utcnow()
             run.result = "Admin cancelled before execution"
     record_audit(db, actor_id=actor.id, action="admin.run_status", target_id=run.id, detail={"status": payload.status, "reason": payload.reason})
+    add_run_event(db, run, "requeued" if payload.status == "QUEUED" else "cancelled" if run.status == "CANCELLED" else "cancel_requested")
     db.commit()
     return run
 

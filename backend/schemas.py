@@ -4,8 +4,10 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from utils import norm
+from .plugins import PLUGINS
+from .permissions import PERMISSIONS
 
 
 class UserOut(BaseModel):
@@ -35,6 +37,29 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     email: str = Field(min_length=5, max_length=254)
     password: str = Field(min_length=1, max_length=128)
+
+
+class AdminUserCreateIn(RegisterIn):
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("name must contain at least two visible characters")
+        return value
+
+
+class AdminUserEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=2, max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        return RegisterIn.valid_email(value)
 
 
 class ProfileUpdateIn(BaseModel):
@@ -68,6 +93,8 @@ class PlanOut(BaseModel):
     task_limit: int
     run_limit: int
     features: list[str]
+    plugin_permissions: list[str] | None = None
+    permissions: list[str] | None = None
     active: bool
     sort_order: int
 
@@ -92,7 +119,28 @@ class UsageOut(BaseModel):
 class AccountIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     unique_id: str = Field(min_length=1, max_length=80)
-    cookies: list[dict]
+    cookies: list[dict] = Field(min_length=1, max_length=200)
+
+    @field_validator("cookies")
+    @classmethod
+    def scoped_cookies(cls, value: list[dict]) -> list[dict]:
+        clean = []
+        for item in value:
+            domain = item.get("domain", "")
+            if not isinstance(domain, str) or domain.lstrip(".") not in {"douyin.com", "www.douyin.com"}:
+                raise ValueError("cookies must be scoped to douyin.com")
+            if not isinstance(item.get("name"), str) or not item["name"] or not isinstance(item.get("value"), str):
+                raise ValueError("invalid cookie name or value")
+            if len(item["value"]) > 16384 or len(item["name"]) > 256:
+                raise ValueError("cookie too large")
+            if not isinstance(item.get("path", "/"), str) or not item.get("path", "/").startswith("/"):
+                raise ValueError("invalid cookie path")
+            entry = {key: item[key] for key in ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite") if key in item}
+            entry.setdefault("path", "/")
+            if entry.get("sameSite") not in {None, "Strict", "Lax", "None"}:
+                entry.pop("sameSite")
+            clean.append(entry)
+        return clean
 
 
 class AccountOut(BaseModel):
@@ -103,18 +151,45 @@ class AccountOut(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    inspection_status: str | None = None
+    inspection_message: str | None = None
+    checked_at: datetime | None = None
 
 
 class TaskIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    account_id: str = Field(min_length=1, max_length=36)
+    account_id: str | None = Field(default=None, min_length=1, max_length=36)
+    plugin_id: str = Field(default="douyin_streak", max_length=80)
     name: str = Field(min_length=1, max_length=80)
-    targets: list[str] = Field(min_length=1, max_length=100)
-    message: str = Field(min_length=1, max_length=2000)
+    targets: list[str] = Field(default_factory=list, max_length=100)
+    message: str = Field(default="", max_length=2000)
+    plugin_config: dict | None = None
     hitokoto_types: list[str] = Field(default_factory=list, max_length=20)
     schedule_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     timezone: str = Field(default="Asia/Shanghai", max_length=64)
     enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_plugin_configuration(self):
+        plugin = PLUGINS[self.plugin_id]
+        if plugin.requires_account and not self.account_id:
+            raise ValueError("this plugin requires an account")
+        if not plugin.requires_account and self.account_id:
+            raise ValueError("this plugin does not accept account credentials")
+        source = self.plugin_config
+        if source is None:
+            source = {key: getattr(self, key) for key in plugin.legacy_fields}
+        self.plugin_config = plugin.config_model.model_validate(source).model_dump(mode="json")
+        for key in plugin.legacy_fields:
+            setattr(self, key, self.plugin_config[key])
+        return self
+
+    @field_validator("plugin_id")
+    @classmethod
+    def known_plugin(cls, value: str) -> str:
+        if value not in PLUGINS:
+            raise ValueError("unknown plugin")
+        return value
 
     @field_validator("targets")
     @classmethod
@@ -202,11 +277,21 @@ class RunOut(BaseModel):
     created_at: datetime
 
 
+class RunEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    code: str
+    message: str
+    sent_count: int
+    created_at: datetime
+
+
 class AdminUserOut(UserOut):
     subscription: SubscriptionOut | None = None
 
 
 class PlanUpdateIn(BaseModel):
+    slug: str | None = Field(default=None, min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(max_length=255)
     monthly_cents: int = Field(gt=0)
@@ -216,8 +301,59 @@ class PlanUpdateIn(BaseModel):
     task_limit: int = Field(gt=0)
     run_limit: int = Field(gt=0)
     features: list[str] = Field(max_length=30)
+    plugin_permissions: list[str] | None = Field(default=None, max_length=100)
+    permissions: list[str] | None = Field(default=None, max_length=100)
     active: bool = True
     sort_order: int = Field(default=0, ge=0)
+
+    @field_validator("plugin_permissions")
+    @classmethod
+    def known_permissions(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(item not in PLUGINS for item in value):
+            raise ValueError("unknown plugin permission")
+        return list(dict.fromkeys(value)) if value is not None else None
+
+    @field_validator("permissions")
+    @classmethod
+    def valid_actions(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(item not in PERMISSIONS for item in value):
+            raise ValueError("unknown operation permission")
+        return list(dict.fromkeys(value)) if value is not None else None
+
+
+class PlanCreateIn(PlanUpdateIn):
+    permissions: list[str] = Field(default_factory=list, max_length=100)
+    plugin_permissions: list[str] = Field(default_factory=list, max_length=100)
+    slug: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    id: str | None = Field(default=None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class SettingIn(BaseModel):
+    value: str = Field(max_length=10000)
+
+
+class GeneralSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registration_enabled: bool = Field(strict=True)
+    worker_enabled: bool | None = Field(default=None, strict=True)
+    worker_timeout: int | None = Field(default=None, ge=10, le=3600, strict=True)
+
+
+class AnnouncementIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=10000)
+    active: bool = True
+
+
+class AnnouncementOut(AnnouncementIn):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    created_at: datetime
+
+
+class AnnouncementNotificationOut(AnnouncementOut):
+    read_at: datetime | None = None
 
 
 class QuotaAdjustmentIn(BaseModel):

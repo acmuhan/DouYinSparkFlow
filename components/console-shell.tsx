@@ -2,8 +2,9 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import * as Tabs from "@radix-ui/react-tabs";
 import {
-  Activity, ArrowUpRight, BarChart3, Bell, Check, ChevronRight,
+  Activity, ArrowUpRight, BarChart3, Check, ChevronRight,
   CircleHelp, CreditCard, KeyRound, LayoutDashboard, Loader2, LogOut, Menu,
   Plus, ReceiptText, Server, Settings2, Sparkles, X,
 } from "lucide-react";
@@ -11,9 +12,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/components/auth-gate";
-import { Account, ApiKey, Plan, Subscription, Usage, User, apiFetch, taskInputSchema } from "@/lib/api";
+import { ApiKey, Plan, Subscription, Usage, User, apiFetch } from "@/lib/api";
+import { Accounts, TaskForm } from "@/components/resource-workspace";
 import { cn } from "@/lib/utils";
 import { AdminConsole } from "@/components/admin-console";
+import { PlatformSettings } from "@/components/platform-settings";
+import { AnnouncementManager, NotificationBell } from "@/components/announcement-center";
+import { AdminUserDirectory } from "@/components/admin-user-editor";
+import { SmtpSettings } from "@/components/smtp-settings";
+import { RunHistory } from "@/components/run-history";
+import { PaymentSettings } from "@/components/payment-settings";
 
 type View = "overview" | "tasks" | "accounts" | "billing" | "keys" | "admin";
 type Task = { id: string; name: string; account_id: string; targets: string[]; schedule_time: string; enabled: boolean; archived: boolean; next_run_at: string | null };
@@ -41,7 +49,7 @@ function SideNav({ active, onSelect, onClose, onProfile, user }: { active: View;
 }
 
 function Topbar({ title, onMenu, onLogout }: { title: string; onMenu: () => void; onLogout: () => void }) {
-  return <header className="flex h-[72px] items-center justify-between border-b border-[#e7e7e7] bg-[#fbfbfa] px-5 sm:px-8"><div className="flex items-center gap-3"><Button variant="ghost" size="sm" className="md:hidden" aria-label="打开菜单" onClick={onMenu}><Menu size={18} /></Button><div><div className="text-[11px] text-[#9a9a9a]">Workspace / Console</div><h1 className="text-[17px] font-semibold tracking-[-.03em]">{title}</h1></div></div><div className="flex items-center gap-2"><Button variant="ghost" size="sm" aria-label="帮助"><CircleHelp size={17} /></Button><Button variant="ghost" size="sm" aria-label="通知"><Bell size={17} /></Button><div className="ml-2 h-6 w-px bg-[#e7e7e7]" /><Button variant="ghost" size="sm" aria-label="退出登录" onClick={onLogout}><LogOut size={16} /></Button></div></header>;
+  return <header className="flex h-[72px] items-center justify-between border-b border-[#e7e7e7] bg-[#fbfbfa] px-5 sm:px-8"><div className="flex items-center gap-3"><Button variant="ghost" size="sm" className="md:hidden" aria-label="打开菜单" onClick={onMenu}><Menu size={18} /></Button><div><div className="text-[11px] text-[#9a9a9a]">Workspace / Console</div><h1 className="text-[17px] font-semibold tracking-[-.03em]">{title}</h1></div></div><div className="flex items-center gap-2"><Button variant="ghost" size="sm" aria-label="帮助"><CircleHelp size={17} /></Button><NotificationBell /><div className="ml-2 h-6 w-px bg-[#e7e7e7]" /><Button variant="ghost" size="sm" aria-label="退出登录" onClick={onLogout}><LogOut size={16} /></Button></div></header>;
 }
 
 function StatCard({ label, value, hint, mark }: { label: string; value: string; hint: string; mark?: string }) {
@@ -55,44 +63,12 @@ function Overview({ onSelect, user }: { onSelect: (view: View) => void; user: Us
   return <div className="space-y-6"><ErrorText message={error} /><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><StatCard label="本月已发送" value={usage ? usage.used.toLocaleString() : "—"} hint={usage ? `剩余 ${usage.remaining.toLocaleString()} 次` : "等待用量数据"} mark="↗" /><StatCard label="最近运行" value={runs.length.toLocaleString()} hint={runs[0] ? `${runs[0].status} · ${new Date(runs[0].created_at).toLocaleDateString("zh-CN")}` : "暂无运行记录"} /><StatCard label="订阅有效期" value={expires} hint={subscription ? `计划 ${String(subscription.snapshot.name ?? "已激活")}` : "前往订阅与账单"} mark="→" /><StatCard label="当前账户" value={user.role} hint={user.email} /></div><div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]"><Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-[#e7e7e7] px-5 py-4"><div><h2 className="text-sm font-semibold">最近运行</h2><p className="mt-1 text-xs text-[#909090]">执行记录由 Python Worker 写入</p></div><Button variant="ghost" size="sm" onClick={() => onSelect("tasks")}>查看任务 <ArrowUpRight size={14} /></Button></div><div className="divide-y divide-[#eeeeec]">{runs.slice(0, 5).map((run) => <div key={run.id} className="flex items-center gap-3 px-5 py-4 text-xs"><span className={cn("h-1.5 w-1.5 rounded-full", run.status === "SUCCEEDED" ? "bg-[#3eaa5d]" : run.status === "FAILED" ? "bg-[#c74b3b]" : "bg-[#e29b32]")} /><span className="min-w-0 flex-1 truncate font-mono text-[11px]">{run.id.slice(0, 12)}</span><span className="text-[#777]">{run.status}</span><span className="text-[#999]">{run.sent_count} 次</span></div>)}{runs.length === 0 && <div className="px-5 py-10 text-center text-xs text-[#999]">还没有运行记录</div>}</div></Card><Card><div className="border-b border-[#e7e7e7] px-5 py-4"><h2 className="text-sm font-semibold">当前计划</h2><p className="mt-1 text-xs text-[#909090]">{subscription ? String(subscription.snapshot.name ?? "已订阅") : "尚未开通计划"}</p></div><div className="p-5">{subscription ? <><div className="flex items-end justify-between"><div><span className="text-[26px] font-semibold tracking-[-.06em]">{expires}</span><span className="ml-1 text-xs text-[#909090]">到期</span></div><Badge tone="green">生效中</Badge></div><div className="mt-6 space-y-3 border-t border-[#eeeeec] pt-4">{(Array.isArray(subscription.snapshot.features) ? subscription.snapshot.features : []).slice(0, 4).map((item) => <div key={String(item)} className="flex items-center gap-2 text-xs text-[#5c5c5c]"><Check size={14} className="text-[#287b42]" />{String(item)}</div>)}</div></> : <p className="py-5 text-sm text-[#777]">选择一个计划后即可创建资源与任务。</p>}<Button className="mt-6 w-full" variant="outline" onClick={() => onSelect("billing")}>{subscription ? "管理订阅" : "查看套餐"} <ChevronRight size={14} /></Button></div></Card></div><Card className="overflow-hidden"><div className="flex items-center justify-between border-b border-[#e7e7e7] px-5 py-4"><div><h2 className="text-sm font-semibold">任务入口</h2><p className="mt-1 text-xs text-[#909090]">创建、调度并监控自动化任务</p></div><Button size="sm" onClick={() => onSelect("tasks")}><Plus size={14} /> 新建任务</Button></div><div className="px-5 py-8 text-sm text-[#777]">将抖音资源接入后，任务会由独立 Worker 领取执行。</div></Card></div>;
 }
 
-function RunHistory({ refreshKey }: { refreshKey: number }) {
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      try { const next = await apiFetch<Run[]>("/runs"); if (active) setRuns(next); }
-      catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "运行记录加载失败"); }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 4000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [refreshKey]);
-  return <Card className="overflow-hidden"><div className="border-b border-[#e7e7e7] px-5 py-4"><h2 className="text-sm font-semibold">执行记录</h2><p className="mt-1 text-xs text-[#909090]">每 4 秒自动刷新，Worker 写入状态与结果。</p></div><ErrorText message={error} /><div className="divide-y divide-[#eeeeec]">{runs.slice(0, 20).map((run) => <div key={run.id} className="flex flex-wrap items-center gap-3 px-5 py-4 text-xs"><span className={cn("h-1.5 w-1.5 rounded-full", run.status === "SUCCEEDED" ? "bg-[#3eaa5d]" : run.status === "FAILED" ? "bg-[#c74b3b]" : "bg-[#e29b32]")} /><span className="min-w-[110px] font-mono text-[11px] text-[#777]">{run.id.slice(0, 12)}</span><Badge tone={run.status === "SUCCEEDED" ? "green" : run.status === "FAILED" ? "orange" : "neutral"}>{run.status}</Badge><span className="text-[#777]">{run.sent_count} 次发送</span><span className="min-w-0 flex-1 text-[#666]">{run.result ?? "执行中，等待 Worker 返回结果"}</span><span className="text-[11px] text-[#999]">{new Date(run.created_at).toLocaleString("zh-CN")}</span></div>)}{runs.length === 0 && <div className="px-5 py-8 text-center text-xs text-[#999]">暂无执行记录</div>}</div></Card>;
-}
-
 function TaskTable({ refreshKey, onRunQueued }: { refreshKey?: number; onRunQueued?: () => void }) {
   const [items, setItems] = useState<Task[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState("");
   useEffect(() => { apiFetch<Task[]>("/tasks").then(setItems).catch((reason) => setError(reason instanceof Error ? reason.message : "任务加载失败")); }, [refreshKey]);
   async function run(id: string) { setBusy(id); setError(""); try { await apiFetch(`/tasks/${id}/run`, { method: "POST" }); onRunQueued?.(); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法启动任务"); } finally { setBusy(""); } }
   async function archive(id: string) { setBusy(id); setError(""); try { await apiFetch(`/tasks/${id}`, { method: "DELETE" }); setItems((current) => current.filter((item) => item.id !== id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法归档任务"); } finally { setBusy(""); } }
   return <div className="space-y-6"><div className="overflow-x-auto"><div className="px-5 pt-3"><ErrorText message={error} /></div><table className="w-full min-w-[700px] text-left text-xs"><thead className="bg-[#fafaf9] text-[10px] uppercase tracking-[.14em] text-[#989898]"><tr><th className="px-5 py-3 font-medium">任务</th><th className="px-5 py-3 font-medium">计划</th><th className="px-5 py-3 font-medium">目标</th><th className="px-5 py-3 font-medium">下次运行</th><th className="px-5 py-3 font-medium">状态</th><th className="px-5 py-3" /></tr></thead><tbody className="divide-y divide-[#eeeeec]">{items.map((task) => <tr key={task.id} className="hover:bg-[#fcfcfb]"><td className="px-5 py-4"><div className="font-medium">{task.name}</div><div className="mt-1 font-mono text-[11px] text-[#999]">{task.id.slice(0, 10)}</div></td><td className="px-5 py-4 text-[#666]">每天 {task.schedule_time}</td><td className="px-5 py-4 font-mono text-[11px]">{task.targets.length}</td><td className="px-5 py-4 text-[#666]">{task.next_run_at ? new Date(task.next_run_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "手动触发"}</td><td className="px-5 py-4"><Badge tone={task.enabled ? "green" : "orange"}>{task.enabled ? "运行中" : "已暂停"}</Badge></td><td className="px-5 py-4 text-right"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" disabled={busy === task.id} onClick={() => void run(task.id)}>{busy === task.id ? <Loader2 size={13} className="animate-spin" /> : "运行"} <ArrowUpRight size={14} /></Button><Button variant="ghost" size="sm" aria-label={`归档${task.name}`} disabled={busy === task.id} onClick={() => void archive(task.id)}><X size={14} /></Button></div></td></tr>)}{items.length === 0 && <tr><td colSpan={6} className="px-5 py-10 text-center text-xs text-[#999]">暂无任务，请先添加抖音资源并创建任务。</td></tr>}</tbody></table></div><RunHistory refreshKey={refreshKey ?? 0} /></div>;
-}
-
-function TaskForm({ onCreated }: { onCreated: () => void }) {
-  const [accounts, setAccounts] = useState<Account[]>([]); const [form, setForm] = useState({ account_id: "", name: "", targets: "", message: "今天也要记得续上火花", hitokoto_types: [] as string[], schedule_time: "21:30", timezone: "Asia/Shanghai", enabled: false }); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
-  useEffect(() => { apiFetch<Account[]>("/accounts").then(setAccounts).catch(() => undefined); }, []);
-  async function submit(event: FormEvent) { event.preventDefault(); setError(""); const parsed = taskInputSchema.safeParse({ ...form, targets: form.targets.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean) }); if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? "请检查表单"); return; } if (!parsed.data.account_id) { setError("请先添加抖音资源"); return; } setBusy(true); try { await apiFetch("/tasks", { method: "POST", body: JSON.stringify(parsed.data) }); onCreated(); } catch (reason) { setError(reason instanceof Error ? reason.message : "创建失败"); } finally { setBusy(false); } }
-  return <form onSubmit={submit} className="space-y-4 border-t border-[#e7e7e7] bg-[#fcfcfb] p-5"><div className="grid gap-4 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-medium">任务名称</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] bg-white px-3 text-sm outline-none focus:border-[#161616]" placeholder="例如：晚间火花维护" /></label><label className="block"><span className="mb-2 block text-xs font-medium">执行资源</span><select required value={form.account_id} onChange={(event) => setForm({ ...form, account_id: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] bg-white px-3 text-sm outline-none focus:border-[#161616]"><option value="">选择抖音账号</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name} · @{account.unique_id}</option>)}</select></label></div><label className="block"><span className="mb-2 block text-xs font-medium">目标好友</span><textarea required value={form.targets} onChange={(event) => setForm({ ...form, targets: event.target.value })} className="min-h-[72px] w-full rounded-[5px] border border-[#dcdcd9] bg-white px-3 py-2 text-sm outline-none focus:border-[#161616]" placeholder="每行或逗号分隔" /></label><div className="grid gap-4 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-medium">消息模板</span><input required value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] bg-white px-3 text-sm outline-none focus:border-[#161616]" /></label><label className="block"><span className="mb-2 block text-xs font-medium">每日运行时间</span><input required type="time" value={form.schedule_time} onChange={(event) => setForm({ ...form, schedule_time: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] bg-white px-3 text-sm outline-none focus:border-[#161616]" /></label></div><ErrorText message={error} /><div className="flex justify-end"><Button type="submit" disabled={busy}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}创建任务</Button></div></form>;
-}
-
-function Accounts() {
-  const [accounts, setAccounts] = useState<Account[]>([]); const [form, setForm] = useState({ name: "", unique_id: "", cookies: "" }); const [open, setOpen] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  async function load() { try { setAccounts(await apiFetch<Account[]>("/accounts")); } catch (reason) { setError(reason instanceof Error ? reason.message : "资源加载失败"); } }
-  useEffect(() => { apiFetch<Account[]>("/accounts").then(setAccounts).catch((reason) => setError(reason instanceof Error ? reason.message : "资源加载失败")); }, []);
-  async function submit(event: FormEvent) { event.preventDefault(); setError(""); let cookies: unknown; try { cookies = JSON.parse(form.cookies); if (!Array.isArray(cookies)) throw new Error(); } catch { setError("Cookie 必须是 JSON 数组"); return; } setBusy(true); try { await apiFetch("/accounts", { method: "POST", body: JSON.stringify({ name: form.name, unique_id: form.unique_id, cookies }) }); setForm({ name: "", unique_id: "", cookies: "" }); setOpen(false); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "资源创建失败"); } finally { setBusy(false); } }
-  async function remove(id: string) { try { await apiFetch(`/accounts/${id}`, { method: "DELETE" }); setAccounts((current) => current.filter((account) => account.id !== id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法删除资源"); } }
-  return <div className="space-y-6"><div className="flex items-end justify-between"><div><h2 className="text-sm font-semibold">抖音资源</h2><p className="mt-1 text-xs text-[#909090]">Cookie 加密存储，只在 Runner 执行时解密。</p></div><Button onClick={() => setOpen((value) => !value)}><Plus size={14} />{open ? "收起表单" : "添加账号"}</Button></div><ErrorText message={error} />{open && <Card><form onSubmit={submit} className="grid gap-4 p-5 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-medium">资源名称</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] px-3 text-sm outline-none focus:border-[#161616]" placeholder="主账号" /></label><label className="block"><span className="mb-2 block text-xs font-medium">抖音号 / unique_id</span><input required value={form.unique_id} onChange={(event) => setForm({ ...form, unique_id: event.target.value })} className="h-10 w-full rounded-[5px] border border-[#dcdcd9] px-3 text-sm outline-none focus:border-[#161616]" /></label><label className="block sm:col-span-2"><span className="mb-2 block text-xs font-medium">Cookie JSON</span><textarea required value={form.cookies} onChange={(event) => setForm({ ...form, cookies: event.target.value })} className="min-h-[110px] w-full rounded-[5px] border border-[#dcdcd9] px-3 py-2 font-mono text-xs outline-none focus:border-[#161616]" placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com","path":"/"}]' /></label><div className="flex justify-end sm:col-span-2"><Button type="submit" disabled={busy}>{busy ? "保存中" : "保存资源"}</Button></div></form></Card>}<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{accounts.map((account) => <Card key={account.id} className="p-5"><div className="flex items-start justify-between"><div className="flex h-10 w-10 items-center justify-center rounded-[6px] bg-[#e9f5eb] text-sm font-semibold">{account.name.slice(0, 1)}</div><Badge tone={account.status === "READY" ? "green" : "orange"}>{account.status === "READY" ? "可用" : account.status}</Badge></div><h3 className="mt-5 text-sm font-semibold">{account.name}</h3><p className="mt-1 font-mono text-[11px] text-[#888]">@{account.unique_id}</p><div className="mt-5 flex items-center justify-between border-t border-[#eeeeec] pt-4 text-xs text-[#777]"><span>{new Date(account.updated_at).toLocaleDateString("zh-CN")}</span><Button variant="ghost" size="sm" aria-label={`删除${account.name}`} onClick={() => void remove(account.id)}><X size={14} /></Button></div></Card>)}{accounts.length === 0 && <Card className="p-8 text-center text-xs text-[#999] md:col-span-2 xl:col-span-3">暂无资源，请添加一个你有权管理的账号。</Card>}</div></div>;
 }
 
 function Billing() {
@@ -112,7 +88,23 @@ function Keys() {
 }
 
 function Admin() {
-  return <AdminConsole />;
+  const panels = [
+    { id: "business", label: "业务管理", content: <AdminConsole /> },
+    { id: "users", label: "账户管理", content: <AdminUserDirectory /> },
+    { id: "general", label: "系统设置", content: <PlatformSettings /> },
+    { id: "smtp", label: "邮件设置", content: <SmtpSettings /> },
+    { id: "payment", label: "支付设置", content: <PaymentSettings /> },
+    { id: "announcements", label: "公告管理", content: <AnnouncementManager /> },
+  ];
+  return <Tabs.Root defaultValue="business">
+    <Tabs.List aria-label="管理模块" className="mb-6 flex flex-wrap gap-1 border-b border-[#e7e7e7]">
+      {panels.map((panel) => <Tabs.Trigger key={panel.id} value={panel.id}
+        className="border-b-2 border-transparent px-3 py-3 text-sm text-[#777] outline-offset-2 data-[state=active]:border-[#161616] data-[state=active]:text-[#161616]">
+        {panel.label}
+      </Tabs.Trigger>)}
+    </Tabs.List>
+    {panels.map((panel) => <Tabs.Content key={panel.id} value={panel.id}>{panel.content}</Tabs.Content>)}
+  </Tabs.Root>;
 }
 
 function ProfileDialog({ user, onClose, onUpdated }: { user: User; onClose: () => void; onUpdated: () => Promise<void> }) {

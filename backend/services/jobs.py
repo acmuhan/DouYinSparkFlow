@@ -13,6 +13,10 @@ from .audit import record_audit
 from .billing import ensure_can_create
 from .errors import QuotaError, TaskError
 from .scheduling import next_daily_run, utc_now
+from .plugin_access import ensure_plugin_access, ensure_permission
+from ..permissions import effective_permissions
+from .run_events import add_run_event
+from ..plugins import PLUGINS, allowed_plugins
 
 ACTIVE_RUN_STATES = ("QUEUED", "CLAIMED", "RUNNING")
 LEASE_SECONDS = 60
@@ -32,9 +36,12 @@ def owned_task(db: Session, user_id: str, task_id: str) -> Task:
 def enqueue_run(db: Session, *, task: Task, trigger_type: str, now: datetime | None = None) -> Run:
     """Caller owns the user/task locks and commits the run and quota together."""
     now = now or utc_now()
-    account = db.scalar(select(Account).where(Account.id == task.account_id, Account.user_id == task.user_id).with_for_update())
-    if not account or account.status != "READY":
-        raise TaskError("account is not available")
+    ensure_plugin_access(db, task.user_id, task.plugin_id)
+    ensure_permission(db, task.user_id, "tasks.schedule" if trigger_type == "SCHEDULED" else "tasks.manual")
+    if PLUGINS[task.plugin_id].requires_account:
+        account = db.scalar(select(Account).where(Account.id == task.account_id, Account.user_id == task.user_id).with_for_update())
+        if not account or account.status != "READY":
+            raise TaskError("account is not available")
     existing = db.scalar(
         select(Run).where(Run.task_id == task.id, Run.status.in_(ACTIVE_RUN_STATES))
         .with_for_update().execution_options(populate_existing=True)
@@ -60,6 +67,7 @@ def enqueue_run(db: Session, *, task: Task, trigger_type: str, now: datetime | N
     db.add(run)
     record_audit(db, actor_id=task.user_id, action="run.queued", target_id=run.id, detail={"task_id": task.id, "trigger": trigger_type})
     db.flush()
+    add_run_event(db, run, "queued")
     return run
 
 
@@ -151,6 +159,7 @@ def finish_interrupted(db: Session, run_id: str, worker_id: str, reason: str) ->
         run.finished_at = utc_now()
         run.lease_until = None
         record_audit(db, actor_id=None, action="run.interrupted", target_id=run.id, detail={"reason": reason})
+        add_run_event(db, run, "interrupted")
 
 
 def recover_expired_runs(db: Session, *, now: datetime | None = None) -> int:
@@ -164,6 +173,7 @@ def recover_expired_runs(db: Session, *, now: datetime | None = None) -> int:
         run.lease_until = None
         run.result = "Worker lease expired; delivery may be partial. Automatic replay disabled."
         record_audit(db, actor_id=None, action="run.lease_expired", target_id=run.id)
+        add_run_event(db, run, "lease_expired")
     return len(expired)
 
 
@@ -185,16 +195,25 @@ def cancel_run(db: Session, *, run_id: str, user_id: str) -> Run:
             if usage:
                 usage.used = max(0, usage.used - 1)
     record_audit(db, actor_id=user_id, action="run.cancel_requested", target_id=run.id)
+    add_run_event(db, run, "cancelled" if run.status == "CANCELLED" else "cancel_requested")
     return run
 
 
-def execution_allowed(db: Session, run: Run, account_id: str) -> bool:
+def execution_allowed(db: Session, run: Run, account_id: str | None) -> bool:
     user = db.get(User, run.user_id)
     task = db.get(Task, run.task_id)
-    account = db.get(Account, account_id)
+    account = db.get(Account, account_id) if account_id else None
+    plugin = PLUGINS.get(run.snapshot.get("plugin_id", "douyin_streak"))
+    account_allowed = bool(plugin and (
+        (not plugin.requires_account and account_id is None)
+        or (plugin.requires_account and account and account.status == "READY" and account.user_id == run.user_id)
+    ))
     subscription = db.scalar(select(Subscription).where(Subscription.user_id == run.user_id))
     return bool(
         user and user.status == "ACTIVE" and task and not task.archived and task.user_id == run.user_id
-        and account and account.status == "READY" and account.user_id == run.user_id
+        and account_allowed
         and subscription and subscription.expires_at and subscription.expires_at > utc_now()
+        and run.snapshot.get("plugin_id", "douyin_streak") in PLUGINS
+        and run.snapshot.get("plugin_id", "douyin_streak") in allowed_plugins(subscription.snapshot)
+        and ("tasks.schedule" if run.trigger_type == "SCHEDULED" else "tasks.manual") in effective_permissions(subscription.snapshot)
     )

@@ -42,9 +42,34 @@ class Plan(Base):
     task_limit: Mapped[int] = mapped_column(Integer)
     run_limit: Mapped[int] = mapped_column(Integer)
     features: Mapped[list[str]] = mapped_column(JSON)
+    plugin_permissions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    permissions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value_encrypted: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(160))
+    content: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AnnouncementRead(Base):
+    __tablename__ = "announcement_reads"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    announcement_id: Mapped[str] = mapped_column(ForeignKey("announcements.id"), primary_key=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Subscription(Base):
@@ -73,6 +98,7 @@ class Order(Base):
     amount_cents: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     provider_version: Mapped[str] = mapped_column(String(4))
+    payment_config_encrypted: Mapped[str | None] = mapped_column(Text)
     provider_trade_no: Mapped[str | None] = mapped_column(String(128), unique=True)
     merchant_id: Mapped[str] = mapped_column(String(64))
     payment_method: Mapped[str] = mapped_column(String(16))
@@ -106,6 +132,10 @@ class Account(Base):
     unique_id: Mapped[str] = mapped_column(String(80))
     cookies_encrypted: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="READY")
+    inspection_status: Mapped[str | None] = mapped_column(String(16))
+    inspection_message: Mapped[str | None] = mapped_column(String(255))
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    friends: Mapped[list[dict] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -115,7 +145,9 @@ class Task(Base):
     __table_args__ = (Index("tasks_schedule_due", "enabled", "archived", "next_run_at"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    account_id: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    plugin_id: Mapped[str] = mapped_column(String(80), default="douyin_streak", server_default="douyin_streak")
+    plugin_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(80))
     targets: Mapped[list[str]] = mapped_column(JSON)
     message: Mapped[str] = mapped_column(Text)
@@ -150,6 +182,17 @@ class Run(Base):
     lease_until: Mapped[datetime | None] = mapped_column(DateTime)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+    __table_args__ = (Index("run_events_run_created", "run_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    code: Mapped[str] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(String(255))
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

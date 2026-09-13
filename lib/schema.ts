@@ -1,9 +1,22 @@
 import { sql } from "drizzle-orm";
-import { mysqlTable, varchar, int, text, json, datetime, boolean, uniqueIndex, index } from "drizzle-orm/mysql-core";
+import { mysqlTable, varchar, int, text, json, datetime, boolean, uniqueIndex, index, primaryKey } from "drizzle-orm/mysql-core";
 
 const id = () => varchar("id", { length: 36 }).primaryKey();
 const at = (name: string) => datetime(name, { mode: "date", fsp: 3 });
 const created = () => at("created_at").notNull().default(sql`CURRENT_TIMESTAMP(3)`);
+
+export const systemSettings = mysqlTable("system_settings", {
+  key: varchar("key", { length: 80 }).primaryKey(),
+  valueEncrypted: text("value_encrypted").notNull(),
+  updatedAt: at("updated_at").notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+});
+export const announcements = mysqlTable("announcements", {
+  id: id(),
+  title: varchar("title", { length: 160 }).notNull(),
+  content: text("content").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: created(),
+});
 
 export const users = mysqlTable("users", {
   id: id(),
@@ -21,6 +34,13 @@ export const sessions = mysqlTable("sessions", {
   expiresAt: at("expires_at").notNull(),
   createdAt: created(),
 });
+export const announcementReads = mysqlTable("announcement_reads", {
+  userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),
+  announcementId: varchar("announcement_id", { length: 36 }).notNull().references(() => announcements.id),
+  readAt: at("read_at").notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.announcementId] }),
+]);
 export const plans = mysqlTable("plans", {
   id: id(),
   slug: varchar("slug", { length: 40 }).notNull().unique(),
@@ -33,6 +53,8 @@ export const plans = mysqlTable("plans", {
   taskLimit: int("task_limit").notNull(),
   runLimit: int("run_limit").notNull(),
   features: json("features").$type<string[]>().notNull(),
+  pluginPermissions: json("plugin_permissions").$type<string[]>(),
+  permissions: json("permissions").$type<string[]>(),
   active: boolean("active").notNull().default(true),
   sortOrder: int("sort_order").notNull().default(0),
   createdAt: created(),
@@ -56,6 +78,7 @@ export const orders = mysqlTable("orders", {
   amountCents: int("amount_cents").notNull(),
   status: varchar("status", { length: 16 }).notNull().default("PENDING"),
   providerVersion: varchar("provider_version", { length: 4 }).notNull(),
+  paymentConfigEncrypted: text("payment_config_encrypted"),
   providerTradeNo: varchar("provider_trade_no", { length: 128 }).unique(),
   merchantId: varchar("merchant_id", { length: 64 }).notNull(),
   paymentMethod: varchar("payment_method", { length: 16 }).notNull(),
@@ -78,6 +101,10 @@ export const refunds = mysqlTable("refunds", {
   updatedAt: at("updated_at").notNull(),
 });
 export const accounts = mysqlTable("accounts", {
+  inspectionStatus: varchar("inspection_status", { length: 16 }),
+  inspectionMessage: varchar("inspection_message", { length: 255 }),
+  checkedAt: at("checked_at"),
+  friends: json("friends").$type<Record<string, string>[]>(),
   id: id(),
   userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),
   name: varchar("name", { length: 80 }).notNull(),
@@ -88,9 +115,11 @@ export const accounts = mysqlTable("accounts", {
   updatedAt: at("updated_at").notNull(),
 }, (t) => [uniqueIndex("accounts_user_unique").on(t.userId, t.uniqueId)]);
 export const tasks = mysqlTable("tasks", {
+  pluginConfig: json("plugin_config").$type<Record<string, unknown>>(),
+  pluginId: varchar("plugin_id", { length: 80 }).notNull().default("douyin_streak"),
   id: id(),
   userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),
-  accountId: varchar("account_id", { length: 36 }).notNull().references(() => accounts.id),
+  accountId: varchar("account_id", { length: 36 }).references(() => accounts.id),
   name: varchar("name", { length: 80 }).notNull(),
   targets: json("targets").$type<string[]>().notNull(),
   message: text("message").notNull(),
@@ -124,6 +153,14 @@ export const runs = mysqlTable("runs", {
   index("runs_task_status").on(t.taskId, t.status),
   index("runs_status_lease").on(t.status, t.leaseUntil),
 ]);
+export const runEvents = mysqlTable("run_events", {
+  id: id(),
+  runId: varchar("run_id", { length: 36 }).notNull().references(() => runs.id),
+  code: varchar("code", { length: 40 }).notNull(),
+  message: varchar("message", { length: 255 }).notNull(),
+  sentCount: int("sent_count").notNull().default(0),
+  createdAt: created(),
+}, (table) => [index("run_events_run_created").on(table.runId, table.createdAt)]);
 export const usage = mysqlTable("usage", {
   id: id(),
   userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id),

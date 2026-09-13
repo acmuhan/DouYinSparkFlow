@@ -27,12 +27,25 @@ Code-level functionality implemented in this repository:
 - [x] Admin metrics, users, entitlements, quota changes, plans and audit logs
 - [x] MySQL migrations, schema checks and TypeScript/Python automated checks
 - [x] Responsive desktop/mobile console smoke checks
+- [x] Encrypted database settings for registration, worker, SMTP and payment
+- [x] Custom plan IDs, lifecycle controls and explicit plugin/operation permissions
+- [x] User creation, retirement, email rebinding and SMTP submission
+- [x] Announcement publication and per-user read state
+- [x] Tenant-scoped staged run events and polling detail drawer
+- [x] Trusted plugin registry, typed configuration and immutable queue snapshots
+- [x] Asynchronous Douyin cookie inspection and observed-conversation friend selection
+
+The friend adapter returns only loaded chat participants, not a complete friend
+directory. Empty or incompatible responses remain unverified. Only Douyin is
+bundled; a no-account diagnostic plugin is exercised in tests. Other providers'
+credential resources and custom result schemas are not implemented.
 
 External or environment-dependent verification still required:
 
 - [ ] MySQL concurrency/isolation integration tests against a live MySQL 8 instance
 - [ ] Docker deployment runtime verification
 - [ ] End-to-end payment and Douyin messaging tests with operator credentials
+- [ ] Real SMTP delivery and live Douyin cookie/friend-response compatibility
 
 Live payment verification requires the operator's Epay endpoint/merchant keys.
 Live messaging verification requires an authorized Douyin account and recipient.

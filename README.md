@@ -8,7 +8,7 @@
 ![MySQL](https://img.shields.io/badge/MySQL-8%2B-4479A1)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-SparkFlow 是基于原 Douyin Playwright Runner 构建的多租户控制台：
+SparkFlow 是插件化任务执行与订阅管理平台，抖音续火花是首个内置插件：
 Next.js App Router + TypeScript + Tailwind/shadcn 风格组件，Python FastAPI
 负责认证、任务与计费，MySQL 8+ 通过 Drizzle Migration 管理结构。
 
@@ -21,6 +21,8 @@ Next.js App Router + TypeScript + Tailwind/shadcn 风格组件，Python FastAPI
 - [本地开发](docs/DEVELOPMENT.md)：环境、迁移、启动、检查
 - [部署与运维](docs/DEPLOYMENT.md)：生产配置、代理、备份、排错
 - [支付与业务边界](docs/BILLING.md)：订单、回调、退款与验收
+- [平台操作](docs/PLATFORM.md)：系统设置、套餐权限、用户、资源与通知
+- [插件开发](docs/PLUGINS.md)：配置契约、执行入口与授权
 - [实现状态](docs/IMPLEMENTATION.md)：架构和待完成的验证
 - [贡献指南](AGENTS.md)：代码规范与 PR 要求
 
@@ -59,20 +61,24 @@ npm run lint
 npm run build
 npm run db:check
 python -m pytest backend/tests tests -q
+python scripts/smoke_platform.py
 ```
 
 生产构建与独立类型检查应顺序运行，避免同时读写 `.next` 生成类型。
-这些检查不等同于真实支付、浏览器执行或 MySQL 并发测试。
+本地冒烟脚本启动隔离 SQLite API 与 Next.js，使用 Chromium 验证管理流程，
+结果保存在 `.runtime/smoke-*/`，结束后关闭临时服务。它不会启动 Worker，
+也不等同于真实支付、抖音执行或 MySQL 并发测试。
 
 ## 功能范围
 
-用户侧包含个人资料、订阅及配额查看、加密账号资源、任务与运行记录、
-API 密钥；管理员侧包含用户状态、套餐、配额调整、订单补单、退款登记、
-审计记录和 Worker 状态。退款登记不会向支付平台自动发起退款。
+用户侧包含订阅配额、加密账号资源、异步 Cookie 检查、会话好友选择、
+插件任务、运行事件日志、API 密钥和公告通知。好友结果仅覆盖已加载会话，
+不保证是完整好友通讯录。
 
-DouYin Spark Flow is a Playwright-based automation project for maintaining
-Douyin chat streaks. The repository now includes a commercial multi-tenant
-console built with Next.js and a Python API.
+管理员可创建、编辑和删除套餐，配置插件与操作权限，管理用户与邮箱绑定，
+设置注册、Worker、SMTP 和支付，以及发布公告。运行设置加密存储在数据库；
+数据库连接和主加密密钥等启动配置仍由部署环境提供。
+退款登记不会向支付平台自动发起退款。
 
 ## 技术栈
 
@@ -91,40 +97,23 @@ console built with Next.js and a Python API.
 app/ components/      Next.js 页面、代理和业务界面
 lib/                  前端契约、数据库与 Drizzle schema
 backend/              Python API、Worker、服务和测试
+backend/plugins/      受信任插件注册表、配置与执行入口
 core/ utils/          Worker 复用的执行模块与工具
 drizzle/              SQL 迁移与快照
-scripts/              数据库迁移入口
+scripts/              数据库迁移与本地集成验收
 tests/                执行模块回归测试
 docs/                 平台教程、运维说明和项目图片
 ```
 
-## Product Console
-
-The new platform is organized as a SaaS application:
-
-- `app/` contains the Next.js App Router pages and same-origin API routes.
-- `components/` contains reusable Tailwind/shadcn-style UI components.
-- `lib/` contains the strict Drizzle MySQL schema and database singleton.
-- `backend/` contains the FastAPI API, billing services, worker, and tests.
-- `scripts/` contains migration and operational helpers.
-- `core/` remains the browser automation engine while the new Runner wraps it.
-
-The commercial platform supports user and admin roles, encrypted Douyin
-accounts, task scheduling, quota-aware subscriptions, API keys, order audit
-logs, and Epay V1/V2-compatible checkout callbacks. See
-[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for the architecture and
-acceptance checklist.
+## 安全与维护
 
 平台是唯一受维护的启动方式。旧单机 CLI、定时 Actions、
 独立 Docker 入口和配置生成器已移除；仍被 Worker 引用的执行模块保留。
 
-Do not commit `.env` files, browser cookies, API keys, or generated logs.
-Review Douyin's terms and obtain the required authorization before operating
-accounts for other people or offering paid automation.
-
-For production, set a unique high-entropy `ENCRYPTION_KEY`; empty values and
-the example placeholders are rejected by the API. Configure Epay credentials
-and `ADMIN_PASSWORD` through the deployment environment, never in Git.
+不要提交 `.env`、浏览器 Cookie、API 密钥或运行日志。
+操作他人账号前取得明确授权，并遵守目标平台规则。
+生产使用独立高熵 `ENCRYPTION_KEY`，妥善备份且不要直接替换；
+账号 Cookie、SMTP 密码和支付凭据依赖该密钥解密。
 
 ## License
 

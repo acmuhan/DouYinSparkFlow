@@ -1,0 +1,1 @@
+ALTER TABLE `orders` ADD `payment_config_encrypted` text;

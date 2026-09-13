@@ -78,8 +78,9 @@ def build_checkout(
     notify_url: str,
     return_url: str,
     custom_param: str,
+    settings=None,
 ) -> dict[str, str]:
-    settings = get_settings()
+    settings = settings or get_settings()
     params = {
         "pid": settings.epay_pid,
         "type": payment_method,
@@ -101,13 +102,21 @@ def build_checkout(
     return {"endpoint": endpoint, "method": "GET", "params": params, "url": f"{endpoint}?{urlencode(params)}" if endpoint else ""}
 
 
-def verify_callback(params: Mapping[str, str]) -> None:
-    settings = get_settings()
-    version = str(params.get("sign_type", settings.epay_version)).upper()
-    valid = verify_v2(params, settings.epay_public_key) if version in {"RSA", "RSA-SHA256"} else verify_v1(params, settings.epay_key)
+def verify_callback(params: Mapping[str, str], *, settings=None) -> None:
+    settings = settings or get_settings()
+    version = settings.epay_version.upper()
+    declared = str(params.get("sign_type", "")).upper()
+    if params.get("pid") != settings.epay_pid:
+        raise PaymentError("payment merchant does not match")
+    if (version == "V2" and declared not in {"RSA", "RSA-SHA256"}) or (version == "V1" and declared not in {"", "MD5"}):
+        raise PaymentError("payment signature algorithm does not match")
+    valid = (bool(settings.epay_public_key) and verify_v2(params, settings.epay_public_key)) if version == "V2" else (bool(settings.epay_key) and verify_v1(params, settings.epay_key))
     if not valid:
         raise PaymentError("invalid payment signature")
-    if version in {"RSA", "RSA-SHA256"}:
-        timestamp = int(params.get("timestamp", "0"))
+    if version == "V2":
+        try:
+            timestamp = int(params.get("timestamp", "0"))
+        except ValueError:
+            raise PaymentError("payment callback timestamp invalid") from None
         if abs(int(time.time()) - timestamp) > settings.epay_timestamp_tolerance:
             raise PaymentError("payment callback timestamp expired")
